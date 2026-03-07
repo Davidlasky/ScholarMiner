@@ -30,7 +30,7 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-MAX_PAGES = 15
+MAX_PAGES = 2
 RESULTS_PER_PAGE = 10
 
 def parse_google_scholar(scholar_url, max_pages=MAX_PAGES):
@@ -112,4 +112,192 @@ def parse_google_scholar(scholar_url, max_pages=MAX_PAGES):
     logger.info("Total IEEE papers found: %d", len(papers))
     return papers
 
-# ... (rest of the file is the same) ...
+
+def extract_paper_info(result_div):
+    """Extract paper information from a Google Scholar result div."""
+    paper = {}
+
+    try:
+        # Extract title and URL
+        title_tag = result_div.find("h3", class_="gs_rt")
+        if not title_tag:
+            title_tag = result_div.find("h3")
+
+        if title_tag:
+            link = title_tag.find("a")
+            if link:
+                paper["title"] = link.get_text(strip=True)
+                paper["url"] = link.get("href", "")
+            else:
+                paper["title"] = title_tag.get_text(strip=True)
+                paper["url"] = ""
+        else:
+            return None
+
+        # Extract IEEE document ID from URL
+        paper["ieee_id"] = extract_ieee_id(paper.get("url", ""))
+
+        # Extract citation count
+        citation_tag = result_div.find("a", string=re.compile(r"Cited by \d+"))
+        if citation_tag:
+            match = re.search(r"Cited by (\d+)", citation_tag.get_text())
+            paper["citations"] = int(match.group(1)) if match else 0
+        else:
+            paper["citations"] = 0
+
+        # Extract snippet/description
+        snippet_tag = result_div.find("div", class_="gs_rs")
+        paper["snippet"] = snippet_tag.get_text(strip=True) if snippet_tag else ""
+
+        # Extract authors and year
+        author_tag = result_div.find("div", class_="gs_a")
+        paper["authors"] = author_tag.get_text(strip=True) if author_tag else ""
+
+    except Exception as e:
+        logger.error("Error extracting paper info: %s", str(e))
+        return None
+
+    return paper
+
+
+def extract_ieee_id(url):
+    """Extract the IEEE document ID from an IEEE Xplore URL."""
+    if not url:
+        return ""
+
+    # Pattern: https://ieeexplore.ieee.org/abstract/document/XXXXXXX
+    match = re.search(r"ieeexplore\.ieee\.org/(?:abstract/)?document/(\d+)", url)
+    if match:
+        return match.group(1)
+
+    # Pattern: https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=XXXXXXX
+    match = re.search(r"arnumber=(\d+)", url)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def fetch_ieee_abstract(ieee_url):
+    """
+    Fetch the abstract of a paper from IEEE Xplore.
+
+    Args:
+        ieee_url: URL to the IEEE Xplore paper page.
+
+    Returns:
+        The abstract text, or empty string if not found.
+    """
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    try:
+        # Try using the IEEE Xplore API endpoint
+        ieee_id = extract_ieee_id(ieee_url)
+        if ieee_id:
+            api_url = f"https://ieeexplore.ieee.org/rest/document/{ieee_id}"
+            try:
+                response = session.get(api_url, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    abstract = data.get("abstract", "")
+                    if abstract:
+                        # Clean HTML tags from abstract
+                        abstract = BeautifulSoup(abstract, "html.parser").get_text(strip=True)
+                        return abstract
+            except (json.JSONDecodeError, requests.RequestException):
+                pass
+
+        # Fallback: scrape the page directly
+        # Ensure we're using the abstract page URL
+        if ieee_id:
+            page_url = f"https://ieeexplore.ieee.org/abstract/document/{ieee_id}"
+        else:
+            page_url = ieee_url
+
+        response = session.get(page_url, timeout=15)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Try to find abstract in meta tags
+        meta_abstract = soup.find("meta", attrs={"name": "description"})
+        if meta_abstract:
+            abstract = meta_abstract.get("content", "")
+            if abstract and len(abstract) > 50:
+                return abstract
+
+        # Try to find abstract in the page content
+        abstract_div = soup.find("div", class_="abstract-text")
+        if abstract_div:
+            return abstract_div.get_text(strip=True)
+
+        # Try xplore JSON data embedded in page
+        scripts = soup.find_all("script")
+        for script in scripts:
+            text = script.string or ""
+            if "xplGlobal.document.metadata" in text:
+                match = re.search(r'"abstract":"(.*?)"', text)
+                if match:
+                    abstract = match.group(1)
+                    abstract = abstract.encode().decode("unicode_escape")
+                    return abstract
+
+    except requests.RequestException as e:
+        logger.error("Failed to fetch abstract from %s: %s", ieee_url, str(e))
+    except Exception as e:
+        logger.error("Error parsing abstract from %s: %s", ieee_url, str(e))
+
+    return ""
+
+
+def scrape_and_collect(scholar_url, output_path="papers_data.json"):
+    """
+    Main function: scrape Google Scholar, fetch IEEE abstracts, save to file.
+
+    Args:
+        scholar_url: Google Scholar search URL.
+        output_path: Path to save the collected data.
+
+    Returns:
+        List of paper dicts with abstracts.
+    """
+    logger.info("Starting scraping process for: %s", scholar_url)
+
+    # Step 1: Parse Google Scholar results
+    papers = parse_google_scholar(scholar_url)
+    logger.info("Found %d IEEE papers from Google Scholar", len(papers))
+
+    # Step 2: Fetch abstracts from IEEE Xplore
+    for i, paper in enumerate(papers):
+        logger.info("Fetching abstract %d/%d: %s", i + 1, len(papers), paper["title"][:50])
+        abstract = fetch_ieee_abstract(paper["url"])
+        paper["abstract"] = abstract
+
+        if abstract:
+            logger.info("  Abstract length: %d chars", len(abstract))
+        else:
+            logger.warning("  No abstract found for: %s", paper["title"][:50])
+
+        # Rate limiting
+        time.sleep(REQUEST_DELAY)
+
+    # Step 3: Save to file
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(papers, f, indent=2, ensure_ascii=False)
+
+    logger.info("Saved %d papers to %s", len(papers), output_path)
+    return papers
+
+
+if __name__ == "__main__":
+    # Test with the sample URL
+    test_url = (
+        "https://scholar.google.com/scholar?q=artificial+intelligence"
+        "+site:ieeexplore.ieee.org&hl=en&as_sdt=0,5"
+    )
+    papers = scrape_and_collect(test_url)
+    print(f"Collected {len(papers)} papers")
+    for p in papers[:3]:
+        print(f"  - {p['title'][:60]}... (abstract: {len(p.get('abstract', ''))} chars)")
+
