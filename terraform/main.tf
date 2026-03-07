@@ -19,6 +19,13 @@ provider "google" {
   zone    = var.zone
 }
 
+# Define a dedicated temp bucket in Terraform
+resource "google_storage_bucket" "temp_bucket" {
+  name          = "${var.project_id}-dataproc-temp"
+  location      = var.region
+  force_destroy = true
+}
+
 ###############################################################################
 # Enable Required APIs
 ###############################################################################
@@ -48,7 +55,7 @@ resource "google_compute_disk" "postgres_data_disk" {
 # Backend Node: Database & Monitoring
 resource "google_compute_instance" "backend_node" {
   name         = "ieee-backend-node"
-  machine_type = "e2-medium" 
+  machine_type = "e2-medium"
   zone         = var.zone
   tags         = ["backend-secure"]
 
@@ -409,6 +416,7 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
 
   cluster_config {
     staging_bucket = google_storage_bucket.data_bucket.name
+    temp_bucket    = google_storage_bucket.temp_bucket.name
 
     master_config {
       num_instances = 1
