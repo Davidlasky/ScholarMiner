@@ -38,6 +38,223 @@ resource "google_project_service" "storage" {
   disable_on_destroy = false
 }
 
+# =====================================================================
+# 1. PERSISTENT STORAGE FOR DATABASE (State Separation)
+# =====================================================================
+resource "google_compute_disk" "postgres_data_disk" {
+  name = "postgres-data-disk"
+  type = "pd-ssd"
+  zone = var.zone
+  size = 20
+}
+
+# =====================================================================
+# 2. BACKEND NODE: PostgreSQL + Observability (Isolated & Secure)
+# =====================================================================
+resource "google_compute_instance" "backend_node" {
+  name         = "ieee-backend-node"
+  machine_type = "e2-medium"
+  zone         = var.zone
+  tags         = ["backend-secure"] # Used for strict firewall rules
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-12"
+    }
+  }
+
+  attached_disk {
+    source      = google_compute_disk.postgres_data_disk.id
+    device_name = "postgres-data-disk"
+  }
+
+  network_interface {
+    network = "default"
+    access_config {
+      # Need ephemeral IP for pulling Docker images and accessing Grafana
+    }
+  }
+
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    set -e
+    echo "Initializing Secure Backend Node..."
+
+    # Format and mount persistent disk
+    DISK_ID="/dev/disk/by-id/google-postgres-data-disk"
+    MOUNT_DIR="/mnt/stateful_partition"
+    while [ ! -e $DISK_ID ]; do sleep 1; done
+    if ! blkid $DISK_ID; then mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0,discard $DISK_ID; fi
+    mkdir -p $MOUNT_DIR
+    mount -o discard,defaults $DISK_ID $MOUNT_DIR
+    PG_DATA_DIR="$MOUNT_DIR/pgdata"
+    mkdir -p $PG_DATA_DIR
+    
+    # Install Docker
+    apt-get update && apt-get install -y docker.io docker-compose-plugin
+
+    # Setup Observability & DB config
+    mkdir -p /opt/backend
+    cd /opt/backend
+
+    cat << 'PROMETHEUS' > prometheus.yml
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: 'flask_app'
+        static_configs:
+          # We will dynamically replace this target in production
+          - targets: ['ieee-web-node:5000'] 
+    PROMETHEUS
+
+    cat << COMPOSE > docker-compose.yml
+    version: '3.8'
+    services:
+      postgres:
+        image: postgres:15-alpine
+        restart: always
+        environment:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: supersecretpassword
+          POSTGRES_DB: ieee_search
+        ports:
+          - "5432:5432"
+        volumes:
+          - $PG_DATA_DIR:/var/lib/postgresql/data
+      prometheus:
+        image: prom/prometheus
+        restart: always
+        ports:
+          - "9090:9090"
+        volumes:
+          - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      grafana:
+        image: grafana/grafana
+        restart: always
+        ports:
+          - "3000:3000"
+        depends_on:
+          - prometheus
+    COMPOSE
+
+    docker compose up -d
+    # Wait for Postgres to be ready for connections
+    until docker exec $(docker ps -qf name=postgres) pg_isready -U admin -d ieee_search; do
+      sleep 2
+    done
+
+    # Create the inverted_index table automatically
+    docker exec $(docker ps -qf name=postgres) psql -U admin -d ieee_search -c "
+    CREATE TABLE IF NOT EXISTS inverted_index (
+        term TEXT PRIMARY KEY,
+        doc_ids TEXT,
+        count INTEGER,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+  EOT
+}
+
+# =====================================================================
+# 3. WEB NODE: Flask Frontend (Stateless & Ephemeral)
+# =====================================================================
+resource "google_compute_instance" "web_node" {
+  name         = "ieee-web-node"
+  machine_type = "e2-micro" # Lightweight, disposable VM
+  zone         = var.zone
+  tags         = ["web-public"]
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-12"
+    }
+  }
+
+  network_interface {
+    network = "default"
+    access_config {
+      # Must have public IP for users to access the search engine
+    }
+  }
+
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    set -e
+    echo "Initializing Stateless Web Node..."
+
+    # Install Docker
+    apt-get update && apt-get install -y docker.io docker-compose-plugin
+
+    # Wait for the backend node to be fully up and fetch its internal IP
+    # In a real environment, DNS or Service Discovery is used. 
+    # Here we inject the internal IP directly.
+    export DB_HOST="${google_compute_instance.backend_node.network_interface.0.network_ip}"
+    export KAFKA_HOST="${google_compute_instance.kafka_vm.network_interface.0.network_ip}"
+
+    # Pull and run your custom Flask Docker image
+    docker run -d \
+      --name lightweight-app \
+      --restart always \
+      -p 5000:5000 \
+      -e DB_URL="postgresql://admin:supersecretpassword@$${DB_HOST}:5432/ieee_search" \
+      -e KAFKA_BROKER="$${KAFKA_HOST}:9093" \
+      laskyj/ieee-flask-app:latest
+  EOT
+}
+
+# =====================================================================
+# 4. STRICT FIREWALL RULES (Network Segmentation)
+# =====================================================================
+
+# 4.1 Allow public access to Flask Web UI (Port 5000)
+resource "google_compute_firewall" "allow_web_public" {
+  name    = "allow-web-public"
+  network = "default"
+  allow {
+    protocol = "tcp"
+    ports    = ["5000"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["web-public"]
+}
+
+# 4.2 Allow public access to Grafana Dashboard (Port 3000)
+resource "google_compute_firewall" "allow_grafana_public" {
+  name    = "allow-grafana-public"
+  network = "default"
+  allow {
+    protocol = "tcp"
+    ports    = ["3000"]
+  }
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["backend-secure"]
+}
+
+# 4.3 STRICT INTERNAL RULE: Only VPC instances can access Postgres & Prometheus
+resource "google_compute_firewall" "allow_backend_internal" {
+  name    = "allow-backend-internal"
+  network = "default"
+  allow {
+    protocol = "tcp"
+    ports    = ["5432", "9090"]
+  }
+  source_ranges = ["10.0.0.0/8"] # VPC Internal IP range only
+  target_tags   = ["backend-secure"]
+}
+
+# =====================================================================
+# 5. OUTPUTS
+# =====================================================================
+output "search_engine_url" {
+  description = "Public URL to access the Flask Search Engine"
+  value       = "http://${google_compute_instance.web_node.network_interface.0.access_config.0.nat_ip}:5000"
+}
+
+output "grafana_dashboard_url" {
+  description = "Public URL to access the Grafana Observability Dashboard"
+  value       = "http://${google_compute_instance.backend_node.network_interface.0.access_config.0.nat_ip}:3000"
+}
+
+
 ###############################################################################
 # GCS Bucket for storing data and MapReduce scripts
 ###############################################################################
@@ -131,7 +348,7 @@ resource "google_compute_instance" "kafka_vm" {
 
   boot_disk {
     initialize_params {
-      image = "debian-cloud/debian-11"
+      image = "debian-cloud/debian-12"
       size  = 30
     }
   }
