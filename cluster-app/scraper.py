@@ -279,8 +279,11 @@ def scrape_and_collect(scholar_url, output_path="papers_data.json"):
         else:
             logger.warning("  No abstract found for: %s", paper["title"][:50])
 
-        # Rate limiting
-        time.sleep(REQUEST_DELAY)
+    # Randomized rate limiting to look more human-like
+    sleep_time = random.uniform(5, 12)
+    logger.info(f"Sleeping for {sleep_time:.2f} seconds to avoid IP block...")
+    time.sleep(sleep_time)
+
 
     # Step 3: Save to file
     with open(output_path, "w", encoding="utf-8") as f:

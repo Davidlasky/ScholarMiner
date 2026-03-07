@@ -54,17 +54,48 @@ gcloud compute ssh ieee-search-cluster-m --zone=[YOUR_ZONE]
 3. **Configure and Run the Worker**:
 Install dependencies and start the backend listener using the internal IPs from your Terraform outputs.
 ```bash
-# Install dependencies in the Dataproc Conda environment
-/opt/conda/default/bin/pip install kafka-python-ng requests beautifulsoup4
+#!/bin/bash
+set -e
 
+# Define operational zone
+ZONE="us-west1-a"
+
+# Dynamic Discovery: Retrieve Internal IPs
+echo "Querying infrastructure metadata..."
+DB_INTERNAL_IP=$(gcloud compute instances describe ieee-backend-node --zone=$ZONE --format='get(networkInterfaces[0].networkIP)')
+KAFKA_INTERNAL_IP=$(gcloud compute instances describe kafka-broker --zone=$ZONE --format='get(networkInterfaces[0].networkIP)')
+
+# Project Context Discovery
+PROJECT_ID=$(gcloud config get-value project)
+BUCKET_NAME="${PROJECT_ID}-ieee-search-data"
+
+# Environment Configuration
+export DB_HOST="$DB_INTERNAL_IP"
+export KAFKA_BROKER="$KAFKA_INTERNAL_IP:9093"
+export GCS_BUCKET="$BUCKET_NAME"
+
+echo "Configuration Validated:"
+echo " - Backend DB: $DB_HOST"
+echo " - Kafka Broker: $KAFKA_BROKER"
+echo " - GCS Bucket: $GCS_BUCKET"
+
+# Dependency Resolution
+echo "Installing Python dependencies..."
+/opt/conda/default/bin/pip install --quiet kafka-python-ng requests beautifulsoup4
+
+# Process Management
 cd /tmp/cluster-app
-export DB_HOST='[backend_db_internal_ip]'
-export KAFKA_BROKER='[kafka_internal_ip]:9093'
-export GCS_BUCKET='[project-id]-ieee-search-data'
-
-# Start worker in background
+echo "Restarting Backend Worker..."
+pkill -f backend.py || true
 nohup python3 backend.py > /tmp/backend.log 2>&1 &
-tail -f /tmp/backend.log
+
+# Initial Health Check
+sleep 3
+if grep -q "Connected to Kafka successfully" /tmp/backend.log; then
+    echo "Deployment Successful: Worker is listening for requests."
+else
+    echo "Warning: Worker started but connection not yet confirmed. Check /tmp/backend.log."
+fi
 
 ```
 
