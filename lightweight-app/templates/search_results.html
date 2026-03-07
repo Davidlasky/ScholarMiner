@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-content">
+    <div class="results-container">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+            <a href="{{ url_for('select_action') }}" class="btn">Select Again</a>
+        </div>
+
+        <div class="results-info">
+            <p>You searched for the term: <strong>{{ term }}</strong></p>
+            <p>Your search was executed in <strong>{{ execution_time }} ms</strong></p>
+        </div>
+
+        {% if results %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Doc ID<br><small>In IEEE Explore Paper URL</small></th>
+                    <th># of Citations</th>
+                    <th>Doc Name</th>
+                    <th>Frequencies</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for result in results %}
+                <tr>
+                    <td>
+                        {% if result.doc_url %}
+                            <a href="{{ result.doc_url }}" target="_blank">{{ result.doc_id }}</a>
+                        {% else %}
+                            {{ result.doc_id }}
+                        {% endif %}
+                    </td>
+                    <td>{{ result.citations }}</td>
+                    <td>{{ result.doc_name }}</td>
+                    <td>{{ result.frequency }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="text-align: center; margin-top: 20px; color: #666;">
+            No results found for the term "{{ term }}".
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

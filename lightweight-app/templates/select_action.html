@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-content">
+    <div class="success-message">
+        <p>Engine was Loaded &amp; Inverted indices were constructed successfully!</p>
+    </div>
+
+    <h2>Please Select Action</h2>
+
+    <div class="btn-group">
+        <a href="{{ url_for('search_term') }}" class="btn btn-large">Search for Term</a>
+        <a href="{{ url_for('top_n') }}" class="btn btn-large">Most Frequent Terms</a>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-content">
+    <div class="results-container">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+            <a href="{{ url_for('select_action') }}" class="btn">Select Again</a>
+        </div>
+
+        <h2 style="text-align: left;">Top-N Frequent Terms</h2>
+
+        <div class="results-info">
+            <p>Your search was executed in <strong>{{ execution_time }} ms</strong></p>
+        </div>
+
+        {% if results %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Term</th>
+                    <th>Total Frequencies</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for result in results %}
+                <tr>
+                    <td>{{ result.term }}</td>
+                    <td>{{ result.frequency }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="text-align: center; margin-top: 20px; color: #666;">
+            No results found.
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
