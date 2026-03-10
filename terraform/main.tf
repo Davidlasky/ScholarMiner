@@ -114,6 +114,9 @@ version: '3.3'
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: postgres_db
+    networks:
+      - search_net
     restart: always
     environment:
       POSTGRES_USER: admin
@@ -137,6 +140,13 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+      - postgres
+    networks:
+      - search_net
+
+networks:
+  search_net:
+    driver: bridge
 COMPOSE
 
     docker-compose up -d
