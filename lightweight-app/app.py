@@ -43,49 +43,53 @@ def get_kafka_producer():
 
 def send_kafka_message(message):
     """Send a message to the Kafka request topic and wait for a response."""
-    producer = get_kafka_producer()
-    if producer is None:
-        return {"error": "Kafka broker is not available. Please check the cluster."}
-
     request_id = str(uuid.uuid4())
     message["request_id"] = request_id
 
-    try:
-        producer.send(KAFKA_REQUEST_TOPIC, value=message)
-        producer.flush()
-        logger.info("Sent message to Kafka: %s", message)
-    except Exception as e:
-        logger.error("Failed to send message to Kafka: %s", str(e))
-        return {"error": f"Failed to send message: {str(e)}"}
-    finally:
-        producer.close()
-
-    # Wait for response from the cluster
     try:
         consumer = KafkaConsumer(
             KAFKA_RESPONSE_TOPIC,
             bootstrap_servers=KAFKA_BROKER,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             auto_offset_reset="latest",
-            consumer_timeout_ms=KAFKA_TIMEOUT * 1000,
-            # Use a unique group_id for each request to ensure we get the response
-            group_id=f"lightweight-app-{request_id}-{int(time.time())}",
+            group_id=f"flask-app-{request_id}",
         )
-
-        start_time = time.time()
-        for msg in consumer:
-            response = msg.value
-            if response.get("request_id") == request_id:
-                consumer.close()
-                return response
-            if time.time() - start_time > KAFKA_TIMEOUT:
-                break
-
-        consumer.close()
-        return {"error": "Timeout waiting for response from cluster."}
+        consumer.poll(timeout_ms=1000)
     except Exception as e:
-        logger.error("Failed to receive response from Kafka: %s", str(e))
-        return {"error": f"Failed to receive response: {str(e)}"}
+        logger.error("Kafka consumer init failed: %s", str(e))
+        return {"error": "Failed to connect to cluster."}
+
+    producer = get_kafka_producer()
+    if producer is None:
+        consumer.close()
+        return {"error": "Kafka broker is not available."}
+
+    try:
+        producer.send(KAFKA_REQUEST_TOPIC, value=message)
+        producer.flush()
+        logger.info("Sent message to Kafka: %s", message)
+    except Exception as e:
+        logger.error("Failed to send message: %s", str(e))
+        consumer.close()
+        return {"error": f"Failed to send message: {str(e)}"}
+    finally:
+        producer.close()
+
+    start_time = time.time()
+    try:
+        while time.time() - start_time < KAFKA_TIMEOUT:
+            records = consumer.poll(timeout_ms=1000)
+            for topic_partition, messages in records.items():
+                for msg in messages:
+                    response = msg.value
+                    if response.get("request_id") == request_id:
+                        consumer.close()
+                        return response
+    except Exception as e:
+        logger.error("Error reading from Kafka: %s", str(e))
+    
+    consumer.close()
+    return {"error": f"Timeout ({KAFKA_TIMEOUT}s). The cluster might be busy running Hadoop."}
 
 
 @app.route("/")
