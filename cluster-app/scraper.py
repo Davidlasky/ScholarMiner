@@ -58,30 +58,159 @@ def parse_google_scholar(scholar_url, max_pages=MAX_PAGES):
         except requests.exceptions.RequestException as e:
             status_code = getattr(e.response, 'status_code', None) if e.response else None
             
-            # --- MOCK MODE FALLBACK ---
+# --- MOCK MODE FALLBACK (25 High-Quality Entries) ---
             if status_code in [403, 429] or "429" in str(e) or "403" in str(e):
-                logger.warning(f"Blocked by Google ({status_code})! Using sample IEEE papers to continue testing...")
+                logger.warning(f"Blocked by Google ({status_code})! Using expanded mock data to continue pipeline testing...")
                 return [
                     {
                         "title": "Hadoop: A Distributed File System", 
-                        "url": "https://ieeexplore.ieee.org/document/1", 
-                        "ieee_id": "1", "citations": 5000, 
+                        "url": "https://ieeexplore.ieee.org/document/1", "ieee_id": "1", "citations": 8500, 
                         "abstract": "Hadoop is a framework that allows for the distributed processing of large data sets across clusters of computers using simple programming models. It is designed to scale up from single servers to thousands of machines, each offering local computation and storage.",
-                        "authors": "Doug Cutting",
+                        "authors": "Doug Cutting"
                     },
                     {
                         "title": "MapReduce: Simplified Data Processing on Large Clusters", 
-                        "url": "https://ieeexplore.ieee.org/document/2", 
-                        "ieee_id": "2", "citations": 12000, 
-                        "abstract": "MapReduce is a programming model and an associated implementation for processing and generating large data sets. Users specify a map function that processes a key/value pair to generate a set of intermediate key/value pairs, and a reduce function that merges all intermediate values associated with the same intermediate key.",
-                        "authors": "Jeffrey Dean, Sanjay Ghemawat",
+                        "url": "https://ieeexplore.ieee.org/document/2", "ieee_id": "2", "citations": 12000, 
+                        "abstract": "MapReduce is a programming model and an associated implementation for processing and generating large data sets. Users specify a map function that processes a key/value pair, and a reduce function that merges all intermediate values.",
+                        "authors": "Jeffrey Dean, Sanjay Ghemawat"
                     },
                     {
                         "title": "Apache Kafka: A Distributed Streaming Platform", 
-                        "url": "https://ieeexplore.ieee.org/document/3", 
-                        "ieee_id": "3", "citations": 3000, 
-                        "abstract": "Apache Kafka is a distributed event store and stream-processing platform. It is an open-source system developed by the Apache Software Foundation written in Java and Scala. The project aims to provide a unified, high-throughput, low-latency platform for handling real-time data feeds.",
-                        "authors": "Jay Kreps",
+                        "url": "https://ieeexplore.ieee.org/document/3", "ieee_id": "3", "citations": 3500, 
+                        "abstract": "Apache Kafka is a distributed event store and stream-processing platform. It provides a unified, high-throughput, low-latency platform for handling real-time data feeds, allowing decoupled architecture between producers and consumers.",
+                        "authors": "Jay Kreps"
+                    },
+                    {
+                        "title": "Terraform: Infrastructure as Code for Cloud Provisioning", 
+                        "url": "https://ieeexplore.ieee.org/document/4", "ieee_id": "4", "citations": 850, 
+                        "abstract": "Terraform enables infrastructure as code. This paper explores how declarative configuration files can be used to provision distributed systems and manage cloud resources across multiple providers automatically, ensuring reliable state management.",
+                        "authors": "HashiCorp Research"
+                    },
+                    {
+                        "title": "Optimizing Distributed Machine Learning Models", 
+                        "url": "https://ieeexplore.ieee.org/document/5", "ieee_id": "5", "citations": 2100, 
+                        "abstract": "Training machine learning models on large datasets requires efficient distributed systems. We propose a new parameter server architecture to reduce network latency and optimize throughput during model synchronization.",
+                        "authors": "AI Research Lab"
+                    },
+                    {
+                        "title": "A Survey on DevOps Practices in Modern Software Engineering", 
+                        "url": "https://ieeexplore.ieee.org/document/6", "ieee_id": "6", "citations": 1420, 
+                        "abstract": "DevOps integrates software development and IT operations. This survey reviews continuous integration, continuous deployment (CI/CD), and automated testing pipelines, emphasizing their impact on software delivery speed and system reliability.",
+                        "authors": "SE Group"
+                    },
+                    {
+                        "title": "Service Mesh Architecture for Microservices", 
+                        "url": "https://ieeexplore.ieee.org/document/7", "ieee_id": "7", "citations": 930, 
+                        "abstract": "As microservices scale, managing service-to-service communication becomes complex. A service mesh provides a dedicated infrastructure layer to handle traffic management, observability, telemetry, and security without modifying application code.",
+                        "authors": "Cloud Native Foundation"
+                    },
+                    {
+                        "title": "Real-time Data Processing with Apache Spark", 
+                        "url": "https://ieeexplore.ieee.org/document/8", "ieee_id": "8", "citations": 4200, 
+                        "abstract": "Apache Spark provides an interface for programming entire clusters with implicit data parallelism and fault tolerance. We evaluate its in-memory processing performance against traditional Hadoop MapReduce workloads for iterative algorithms.",
+                        "authors": "Matei Zaharia"
+                    },
+                    {
+                        "title": "Machine Learning Operations (MLOps): A Comprehensive Review", 
+                        "url": "https://ieeexplore.ieee.org/document/9", "ieee_id": "9", "citations": 680, 
+                        "abstract": "MLOps aims to deploy and maintain machine learning models in production reliably and efficiently. We discuss tracking experiments, packaging models, managing feature stores, and monitoring data drift to ensure continuous model quality.",
+                        "authors": "Data Science Team"
+                    },
+                    {
+                        "title": "High Availability in Cloud Computing Platforms", 
+                        "url": "https://ieeexplore.ieee.org/document/10", "ieee_id": "10", "citations": 1750, 
+                        "abstract": "Ensuring high availability requires redundancy, automated failover, and decoupled architectures. We analyze fault tolerance mechanisms using message brokers, distributed databases, and load balancers to prevent single points of failure.",
+                        "authors": "Distributed Systems Lab"
+                    },
+                    {
+                        "title": "Kubernetes: Container Orchestration for Cloud Native Applications", 
+                        "url": "https://ieeexplore.ieee.org/document/11", "ieee_id": "11", "citations": 6200, 
+                        "abstract": "Kubernetes automates the deployment, scaling, and management of containerized applications. It abstracts the underlying infrastructure, providing a declarative approach to maintaining desired state and robust self-healing mechanisms.",
+                        "authors": "Google Cloud Infrastructure"
+                    },
+                    {
+                        "title": "Attention Is All You Need: Transformer Networks", 
+                        "url": "https://ieeexplore.ieee.org/document/12", "ieee_id": "12", "citations": 45000, 
+                        "abstract": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments show it achieves superior parallelization and requires significantly less time to train.",
+                        "authors": "Ashish Vaswani, Noam Shazeer"
+                    },
+                    {
+                        "title": "Deep Residual Learning for Image Recognition", 
+                        "url": "https://ieeexplore.ieee.org/document/13", "ieee_id": "13", "citations": 120000, 
+                        "abstract": "Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training of networks that are substantially deeper than those used previously, optimizing gradient flow during backpropagation.",
+                        "authors": "Kaiming He, Jian Sun"
+                    },
+                    {
+                        "title": "Raft: In Search of an Understandable Consensus Algorithm", 
+                        "url": "https://ieeexplore.ieee.org/document/14", "ieee_id": "14", "citations": 3200, 
+                        "abstract": "Raft is a consensus algorithm for managing a replicated log. It produces a result equivalent to (multi-)Paxos, but its structure is fundamentally different and significantly easier to understand, implement, and operate in production systems.",
+                        "authors": "Diego Ongaro, John Ousterhout"
+                    },
+                    {
+                        "title": "Spanner: Google's Globally-Distributed Database", 
+                        "url": "https://ieeexplore.ieee.org/document/15", "ieee_id": "15", "citations": 2800, 
+                        "abstract": "Spanner is a scalable, multi-version, globally-distributed, and synchronously-replicated database. It is the first system to distribute data at global scale and support externally-consistent distributed transactions via TrueTime API.",
+                        "authors": "James C. Corbett"
+                    },
+                    {
+                        "title": "Dynamo: Amazon's Highly Available Key-value Store", 
+                        "url": "https://ieeexplore.ieee.org/document/16", "ieee_id": "16", "citations": 5600, 
+                        "abstract": "Reliability at massive scale is one of the biggest challenges at Amazon. Dynamo uses a synthesis of well-known techniques to achieve scalability and availability, utilizing consistent hashing, vector clocks, and quorum-like techniques.",
+                        "authors": "Giuseppe DeCandia"
+                    },
+                    {
+                        "title": "Prometheus: A System for Monitoring and Alerting", 
+                        "url": "https://ieeexplore.ieee.org/document/17", "ieee_id": "17", "citations": 1100, 
+                        "abstract": "Monitoring highly dynamic containerized environments demands a robust time-series database. Prometheus uses a pull-based metrics collection model, powerful PromQL query language, and multi-dimensional data models to provide actionable observability.",
+                        "authors": "Cloud Native Foundation"
+                    },
+                    {
+                        "title": "Serverless Computing: One Step Forward, Two Steps Back", 
+                        "url": "https://ieeexplore.ieee.org/document/18", "ieee_id": "18", "citations": 950, 
+                        "abstract": "Serverless platforms like AWS Lambda abstract server management and scale automatically. However, they introduce challenges such as cold start latency, state management bottlenecks, and vendor lock-in for complex distributed workflows.",
+                        "authors": "UC Berkeley Serverless Project"
+                    },
+                    {
+                        "title": "Federated Learning: Strategies for Improving Communication Efficiency", 
+                        "url": "https://ieeexplore.ieee.org/document/19", "ieee_id": "19", "citations": 3400, 
+                        "abstract": "Federated learning enables mobile phones to collaboratively learn a shared prediction model while keeping all the training data locally. We explore approaches to minimize communication bandwidth, ensuring privacy and rapid convergence.",
+                        "authors": "Jakub Konečný"
+                    },
+                    {
+                        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", 
+                        "url": "https://ieeexplore.ieee.org/document/20", "ieee_id": "20", "citations": 38000, 
+                        "abstract": "We introduce a new language representation model called BERT. It is designed to pre-train deep bidirectional representations from unlabeled text by jointly conditioning on both left and right context in all layers, advancing state-of-the-art NLP.",
+                        "authors": "Jacob Devlin"
+                    },
+                    {
+                        "title": "Graph Neural Networks: A Review of Methods and Applications", 
+                        "url": "https://ieeexplore.ieee.org/document/21", "ieee_id": "21", "citations": 4100, 
+                        "abstract": "Graph neural networks capture the dependence of graphs via message passing between the nodes of graphs. We comprehensively review recent variations of GNNs, their training optimizations, and successful applications in structural data mining.",
+                        "authors": "AI Research Group"
+                    },
+                    {
+                        "title": "XGBoost: A Scalable Tree Boosting System", 
+                        "url": "https://ieeexplore.ieee.org/document/22", "ieee_id": "22", "citations": 18000, 
+                        "abstract": "We describe XGBoost, a scalable end-to-end tree boosting system used widely by data scientists. We propose a novel sparsity-aware algorithm for sparse data and a weighted quantile sketch for approximate tree learning, enabling fast execution.",
+                        "authors": "Tianqi Chen"
+                    },
+                    {
+                        "title": "Docker: Lightweight Linux Containers for Consistent Development and Deployment", 
+                        "url": "https://ieeexplore.ieee.org/document/23", "ieee_id": "23", "citations": 2500, 
+                        "abstract": "Docker leverages resource isolation features of the Linux kernel such as cgroups and namespaces. It allows independent containers to run within a single Linux instance, avoiding the overhead of starting and maintaining virtual machines.",
+                        "authors": "Docker Inc."
+                    },
+                    {
+                        "title": "ZooKeeper: Wait-free coordination for Internet-scale systems", 
+                        "url": "https://ieeexplore.ieee.org/document/24", "ieee_id": "24", "citations": 3100, 
+                        "abstract": "ZooKeeper is a service for coordinating processes of distributed applications. It provides a wait-free interface and an event-driven mechanism to guarantee strong consistency and sequential execution across massive clusters.",
+                        "authors": "Patrick Hunt, Mahadev Konar"
+                    },
+                    {
+                        "title": "Resilient Distributed Datasets: A Fault-Tolerant Abstraction for In-Memory Cluster Computing", 
+                        "url": "https://ieeexplore.ieee.org/document/25", "ieee_id": "25", "citations": 8200, 
+                        "abstract": "We present Resilient Distributed Datasets (RDDs), a distributed memory abstraction that lets programmers perform in-memory computations on large clusters in a fault-tolerant manner, forming the foundation of the Apache Spark ecosystem.",
+                        "authors": "Matei Zaharia"
                     }
                 ]
             # --- END MOCK MODE FALLBACK ---
@@ -178,7 +307,7 @@ def extract_ieee_id(url):
     return ""
 
 
-def fetch_ieee_abstract(ieee_url):
+def fetch_ieee_abstract(ieee_url, session):
     """
     Fetch the abstract of a paper from IEEE Xplore.
 
@@ -188,9 +317,6 @@ def fetch_ieee_abstract(ieee_url):
     Returns:
         The abstract text, or empty string if not found.
     """
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
     try:
         # Try using the IEEE Xplore API endpoint
         ieee_id = extract_ieee_id(ieee_url)
@@ -201,10 +327,12 @@ def fetch_ieee_abstract(ieee_url):
                 if response.status_code == 200:
                     data = response.json()
                     abstract = data.get("abstract", "")
-                    if abstract:
+                    if abstract and isinstance(abstract, str) and len(abstract) > 10:
                         # Clean HTML tags from abstract
                         abstract = BeautifulSoup(abstract, "html.parser").get_text(strip=True)
                         return abstract
+                    else:
+                        logger.warning(f"  Received stub/boolean abstract for {ieee_id}, falling back to scraping.")
             except (json.JSONDecodeError, requests.RequestException):
                 pass
 
@@ -252,45 +380,208 @@ def fetch_ieee_abstract(ieee_url):
 
 
 def scrape_and_collect(scholar_url, output_path="papers_data.json"):
-    """
-    Main function: scrape Google Scholar, fetch IEEE abstracts, save to file.
+    # """
+    # Main function: scrape Google Scholar, fetch IEEE abstracts, save to file.
 
-    Args:
-        scholar_url: Google Scholar search URL.
-        output_path: Path to save the collected data.
+    # Args:
+    #     scholar_url: Google Scholar search URL.
+    #     output_path: Path to save the collected data.
 
-    Returns:
-        List of paper dicts with abstracts.
-    """
-    logger.info("Starting scraping process for: %s", scholar_url)
+    # Returns:
+    #     List of paper dicts with abstracts.
+    # """
+    # logger.info("Starting scraping process for: %s", scholar_url)
+    # session = requests.Session()
+    # session.headers.update(HEADERS)
+    # # Step 1: Parse Google Scholar results
+    # papers = parse_google_scholar(scholar_url)
+    # logger.info("Found %d IEEE papers from Google Scholar", len(papers))
 
-    # Step 1: Parse Google Scholar results
-    papers = parse_google_scholar(scholar_url)
-    logger.info("Found %d IEEE papers from Google Scholar", len(papers))
+    # # Step 2: Fetch abstracts from IEEE Xplore
+    # for i, paper in enumerate(papers):
+    #     logger.info("Fetching abstract %d/%d: %s", i + 1, len(papers), paper["title"][:50])
+    #     abstract = fetch_ieee_abstract(paper["url"], session)
+    #     if not abstract or abstract.lower() == "true":
+    #         paper["abstract"] = f"Abstract for {paper['title']} is available at IEEE Xplore."
+    #     else:
+    #         paper["abstract"] = abstract
 
-    # Step 2: Fetch abstracts from IEEE Xplore
-    for i, paper in enumerate(papers):
-        logger.info("Fetching abstract %d/%d: %s", i + 1, len(papers), paper["title"][:50])
-        abstract = fetch_ieee_abstract(paper["url"])
-        paper["abstract"] = abstract
+    #     if abstract:
+    #         logger.info("  Abstract length: %d chars", len(abstract))
+    #     else:
+    #         logger.warning("  No abstract found for: %s", paper["title"][:50])
 
-        if abstract:
-            logger.info("  Abstract length: %d chars", len(abstract))
-        else:
-            logger.warning("  No abstract found for: %s", paper["title"][:50])
-
-    # Randomized rate limiting to look more human-like
-    sleep_time = random.uniform(5, 12)
-    logger.info(f"Sleeping for {sleep_time:.2f} seconds to avoid IP block...")
-    time.sleep(sleep_time)
+    # # Randomized rate limiting to look more human-like
+    # sleep_time = random.uniform(5, 12)
+    # logger.info(f"Sleeping for {sleep_time:.2f} seconds to avoid IP block...")
+    # time.sleep(sleep_time)
 
 
-    # Step 3: Save to file
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(papers, f, indent=2, ensure_ascii=False)
+    # # Step 3: Save to file
+    # with open(output_path, "w", encoding="utf-8") as f:
+    #     json.dump(papers, f, indent=2, ensure_ascii=False)
 
-    logger.info("Saved %d papers to %s", len(papers), output_path)
-    return papers
+    # logger.info("Saved %d papers to %s", len(papers), output_path)
+    # return papers
+    mock_papers = [
+                    {
+                        "title": "Hadoop: A Distributed File System", 
+                        "url": "https://ieeexplore.ieee.org/document/1", "ieee_id": "1", "citations": 8500, 
+                        "abstract": "Hadoop is a framework that allows for the distributed processing of large data sets across clusters of computers using simple programming models. It is designed to scale up from single servers to thousands of machines, each offering local computation and storage.",
+                        "authors": "Doug Cutting"
+                    },
+                    {
+                        "title": "MapReduce: Simplified Data Processing on Large Clusters", 
+                        "url": "https://ieeexplore.ieee.org/document/2", "ieee_id": "2", "citations": 12000, 
+                        "abstract": "MapReduce is a programming model and an associated implementation for processing and generating large data sets. Users specify a map function that processes a key/value pair, and a reduce function that merges all intermediate values.",
+                        "authors": "Jeffrey Dean, Sanjay Ghemawat"
+                    },
+                    {
+                        "title": "Apache Kafka: A Distributed Streaming Platform", 
+                        "url": "https://ieeexplore.ieee.org/document/3", "ieee_id": "3", "citations": 3500, 
+                        "abstract": "Apache Kafka is a distributed event store and stream-processing platform. It provides a unified, high-throughput, low-latency platform for handling real-time data feeds, allowing decoupled architecture between producers and consumers.",
+                        "authors": "Jay Kreps"
+                    },
+                    {
+                        "title": "Terraform: Infrastructure as Code for Cloud Provisioning", 
+                        "url": "https://ieeexplore.ieee.org/document/4", "ieee_id": "4", "citations": 850, 
+                        "abstract": "Terraform enables infrastructure as code. This paper explores how declarative configuration files can be used to provision distributed systems and manage cloud resources across multiple providers automatically, ensuring reliable state management.",
+                        "authors": "HashiCorp Research"
+                    },
+                    {
+                        "title": "Optimizing Distributed Machine Learning Models", 
+                        "url": "https://ieeexplore.ieee.org/document/5", "ieee_id": "5", "citations": 2100, 
+                        "abstract": "Training machine learning models on large datasets requires efficient distributed systems. We propose a new parameter server architecture to reduce network latency and optimize throughput during model synchronization.",
+                        "authors": "AI Research Lab"
+                    },
+                    {
+                        "title": "A Survey on DevOps Practices in Modern Software Engineering", 
+                        "url": "https://ieeexplore.ieee.org/document/6", "ieee_id": "6", "citations": 1420, 
+                        "abstract": "DevOps integrates software development and IT operations. This survey reviews continuous integration, continuous deployment (CI/CD), and automated testing pipelines, emphasizing their impact on software delivery speed and system reliability.",
+                        "authors": "SE Group"
+                    },
+                    {
+                        "title": "Service Mesh Architecture for Microservices", 
+                        "url": "https://ieeexplore.ieee.org/document/7", "ieee_id": "7", "citations": 930, 
+                        "abstract": "As microservices scale, managing service-to-service communication becomes complex. A service mesh provides a dedicated infrastructure layer to handle traffic management, observability, telemetry, and security without modifying application code.",
+                        "authors": "Cloud Native Foundation"
+                    },
+                    {
+                        "title": "Real-time Data Processing with Apache Spark", 
+                        "url": "https://ieeexplore.ieee.org/document/8", "ieee_id": "8", "citations": 4200, 
+                        "abstract": "Apache Spark provides an interface for programming entire clusters with implicit data parallelism and fault tolerance. We evaluate its in-memory processing performance against traditional Hadoop MapReduce workloads for iterative algorithms.",
+                        "authors": "Matei Zaharia"
+                    },
+                    {
+                        "title": "Machine Learning Operations (MLOps): A Comprehensive Review", 
+                        "url": "https://ieeexplore.ieee.org/document/9", "ieee_id": "9", "citations": 680, 
+                        "abstract": "MLOps aims to deploy and maintain machine learning models in production reliably and efficiently. We discuss tracking experiments, packaging models, managing feature stores, and monitoring data drift to ensure continuous model quality.",
+                        "authors": "Data Science Team"
+                    },
+                    {
+                        "title": "High Availability in Cloud Computing Platforms", 
+                        "url": "https://ieeexplore.ieee.org/document/10", "ieee_id": "10", "citations": 1750, 
+                        "abstract": "Ensuring high availability requires redundancy, automated failover, and decoupled architectures. We analyze fault tolerance mechanisms using message brokers, distributed databases, and load balancers to prevent single points of failure.",
+                        "authors": "Distributed Systems Lab"
+                    },
+                    {
+                        "title": "Kubernetes: Container Orchestration for Cloud Native Applications", 
+                        "url": "https://ieeexplore.ieee.org/document/11", "ieee_id": "11", "citations": 6200, 
+                        "abstract": "Kubernetes automates the deployment, scaling, and management of containerized applications. It abstracts the underlying infrastructure, providing a declarative approach to maintaining desired state and robust self-healing mechanisms.",
+                        "authors": "Google Cloud Infrastructure"
+                    },
+                    {
+                        "title": "Attention Is All You Need: Transformer Networks", 
+                        "url": "https://ieeexplore.ieee.org/document/12", "ieee_id": "12", "citations": 45000, 
+                        "abstract": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments show it achieves superior parallelization and requires significantly less time to train.",
+                        "authors": "Ashish Vaswani, Noam Shazeer"
+                    },
+                    {
+                        "title": "Deep Residual Learning for Image Recognition", 
+                        "url": "https://ieeexplore.ieee.org/document/13", "ieee_id": "13", "citations": 120000, 
+                        "abstract": "Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training of networks that are substantially deeper than those used previously, optimizing gradient flow during backpropagation.",
+                        "authors": "Kaiming He, Jian Sun"
+                    },
+                    {
+                        "title": "Raft: In Search of an Understandable Consensus Algorithm", 
+                        "url": "https://ieeexplore.ieee.org/document/14", "ieee_id": "14", "citations": 3200, 
+                        "abstract": "Raft is a consensus algorithm for managing a replicated log. It produces a result equivalent to (multi-)Paxos, but its structure is fundamentally different and significantly easier to understand, implement, and operate in production systems.",
+                        "authors": "Diego Ongaro, John Ousterhout"
+                    },
+                    {
+                        "title": "Spanner: Google's Globally-Distributed Database", 
+                        "url": "https://ieeexplore.ieee.org/document/15", "ieee_id": "15", "citations": 2800, 
+                        "abstract": "Spanner is a scalable, multi-version, globally-distributed, and synchronously-replicated database. It is the first system to distribute data at global scale and support externally-consistent distributed transactions via TrueTime API.",
+                        "authors": "James C. Corbett"
+                    },
+                    {
+                        "title": "Dynamo: Amazon's Highly Available Key-value Store", 
+                        "url": "https://ieeexplore.ieee.org/document/16", "ieee_id": "16", "citations": 5600, 
+                        "abstract": "Reliability at massive scale is one of the biggest challenges at Amazon. Dynamo uses a synthesis of well-known techniques to achieve scalability and availability, utilizing consistent hashing, vector clocks, and quorum-like techniques.",
+                        "authors": "Giuseppe DeCandia"
+                    },
+                    {
+                        "title": "Prometheus: A System for Monitoring and Alerting", 
+                        "url": "https://ieeexplore.ieee.org/document/17", "ieee_id": "17", "citations": 1100, 
+                        "abstract": "Monitoring highly dynamic containerized environments demands a robust time-series database. Prometheus uses a pull-based metrics collection model, powerful PromQL query language, and multi-dimensional data models to provide actionable observability.",
+                        "authors": "Cloud Native Foundation"
+                    },
+                    {
+                        "title": "Serverless Computing: One Step Forward, Two Steps Back", 
+                        "url": "https://ieeexplore.ieee.org/document/18", "ieee_id": "18", "citations": 950, 
+                        "abstract": "Serverless platforms like AWS Lambda abstract server management and scale automatically. However, they introduce challenges such as cold start latency, state management bottlenecks, and vendor lock-in for complex distributed workflows.",
+                        "authors": "UC Berkeley Serverless Project"
+                    },
+                    {
+                        "title": "Federated Learning: Strategies for Improving Communication Efficiency", 
+                        "url": "https://ieeexplore.ieee.org/document/19", "ieee_id": "19", "citations": 3400, 
+                        "abstract": "Federated learning enables mobile phones to collaboratively learn a shared prediction model while keeping all the training data locally. We explore approaches to minimize communication bandwidth, ensuring privacy and rapid convergence.",
+                        "authors": "Jakub Konečný"
+                    },
+                    {
+                        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", 
+                        "url": "https://ieeexplore.ieee.org/document/20", "ieee_id": "20", "citations": 38000, 
+                        "abstract": "We introduce a new language representation model called BERT. It is designed to pre-train deep bidirectional representations from unlabeled text by jointly conditioning on both left and right context in all layers, advancing state-of-the-art NLP.",
+                        "authors": "Jacob Devlin"
+                    },
+                    {
+                        "title": "Graph Neural Networks: A Review of Methods and Applications", 
+                        "url": "https://ieeexplore.ieee.org/document/21", "ieee_id": "21", "citations": 4100, 
+                        "abstract": "Graph neural networks capture the dependence of graphs via message passing between the nodes of graphs. We comprehensively review recent variations of GNNs, their training optimizations, and successful applications in structural data mining.",
+                        "authors": "AI Research Group"
+                    },
+                    {
+                        "title": "XGBoost: A Scalable Tree Boosting System", 
+                        "url": "https://ieeexplore.ieee.org/document/22", "ieee_id": "22", "citations": 18000, 
+                        "abstract": "We describe XGBoost, a scalable end-to-end tree boosting system used widely by data scientists. We propose a novel sparsity-aware algorithm for sparse data and a weighted quantile sketch for approximate tree learning, enabling fast execution.",
+                        "authors": "Tianqi Chen"
+                    },
+                    {
+                        "title": "Docker: Lightweight Linux Containers for Consistent Development and Deployment", 
+                        "url": "https://ieeexplore.ieee.org/document/23", "ieee_id": "23", "citations": 2500, 
+                        "abstract": "Docker leverages resource isolation features of the Linux kernel such as cgroups and namespaces. It allows independent containers to run within a single Linux instance, avoiding the overhead of starting and maintaining virtual machines.",
+                        "authors": "Docker Inc."
+                    },
+                    {
+                        "title": "ZooKeeper: Wait-free coordination for Internet-scale systems", 
+                        "url": "https://ieeexplore.ieee.org/document/24", "ieee_id": "24", "citations": 3100, 
+                        "abstract": "ZooKeeper is a service for coordinating processes of distributed applications. It provides a wait-free interface and an event-driven mechanism to guarantee strong consistency and sequential execution across massive clusters.",
+                        "authors": "Patrick Hunt, Mahadev Konar"
+                    },
+                    {
+                        "title": "Resilient Distributed Datasets: A Fault-Tolerant Abstraction for In-Memory Cluster Computing", 
+                        "url": "https://ieeexplore.ieee.org/document/25", "ieee_id": "25", "citations": 8200, 
+                        "abstract": "We present Resilient Distributed Datasets (RDDs), a distributed memory abstraction that lets programmers perform in-memory computations on large clusters in a fault-tolerant manner, forming the foundation of the Apache Spark ecosystem.",
+                        "authors": "Matei Zaharia"
+                    }
+    ]
+
+    # 将 Mock 数据写入文件，供后续 Hadoop Job 使用
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(mock_papers, f, indent=4)
+    
+    logger.info("✅ Successfully injected %d mock papers into %s", len(mock_papers), output_path)
+    return mock_papers
 
 
 if __name__ == "__main__":
