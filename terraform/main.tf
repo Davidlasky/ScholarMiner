@@ -131,6 +131,8 @@ services:
     restart: always
     ports:
       - "9090:9090"
+    networks:
+      - search_net
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
   grafana:
