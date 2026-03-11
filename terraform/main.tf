@@ -89,9 +89,8 @@ resource "google_compute_instance" "backend_node" {
     
     mkdir -p $MOUNT_DIR
     mount -o discard,defaults $DISK_ID $MOUNT_DIR
-    PG_DATA_DIR="$MOUNT_DIR/pgdata"
+    export PG_DATA_DIR="$MOUNT_DIR/pgdata"
     mkdir -p $PG_DATA_DIR
-    
     # Install Docker
     apt-get update && apt-get install -y docker.io docker-compose
 
@@ -106,6 +105,9 @@ scrape_configs:
   - job_name: 'flask_app'
     static_configs:
       - targets: ['ieee-web-node:5000'] 
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
 PROMETHEUS
 
 # Changed to 3.3 for Debian 11 compatibility
@@ -145,6 +147,14 @@ services:
       - postgres
     networks:
       - search_net
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: always
+    ports:
+      - "9100:9100"
+    networks:
+      - search_net
 
 networks:
   search_net:
@@ -154,11 +164,11 @@ COMPOSE
     docker-compose up -d
 
     # Auto-initialize the PostgreSQL table so the Web Node doesn't crash on boot
-    until docker exec $(docker ps -qf name=postgres) pg_isready -U admin -d ieee_search; do
+    until docker exec postgres_db pg_isready -U admin -d ieee_search; do
       sleep 5
     done
 
-    docker exec $(docker ps -qf name=postgres) psql -U admin -d ieee_search -c "
+    docker exec postgres_db psql -U admin -d ieee_search -c "
     CREATE TABLE IF NOT EXISTS inverted_index (
         term TEXT PRIMARY KEY,
         doc_ids TEXT,
@@ -262,6 +272,17 @@ resource "google_storage_bucket" "data_bucket" {
   force_destroy = true
 
   uniform_bucket_level_access = true
+}
+
+resource "google_storage_bucket_object" "dataproc_init_script" {
+  name    = "scripts/pip_install.sh"
+  content = <<-EOF
+    #!/bin/bash
+    apt-get update
+    apt-get install -y python3-pip
+    pip3 install kafka-python-ng requests beautifulsoup4
+  EOF
+  bucket  = google_storage_bucket.data_bucket.name
 }
 
 # Upload MapReduce scripts to GCS
@@ -430,6 +451,11 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
     staging_bucket = google_storage_bucket.data_bucket.name
     temp_bucket    = google_storage_bucket.temp_bucket.name
 
+    initialization_action {
+      script      = "gs://${google_storage_bucket.data_bucket.name}/${google_storage_bucket_object.dataproc_init_script.name}"
+      timeout_sec = 600
+    }
+
     master_config {
       num_instances = 1
       machine_type  = "e2-standard-2"
@@ -461,6 +487,8 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
       zone = var.zone
       metadata = {
         "kafka-broker" = google_compute_instance.kafka_vm.network_interface[0].network_ip
+        "gcs-bucket"   = google_storage_bucket.data_bucket.name
+        "postgres-ip"  = google_compute_instance.backend_node.network_interface.0.network_ip
       }
     }
   }
@@ -468,6 +496,7 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
   depends_on = [
     google_project_service.dataproc,
     google_compute_instance.kafka_vm,
+    google_storage_bucket_object.dataproc_init_script,
   ]
 }
 
