@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-ScholarMiner Backend - Full Production Version
-Refactored for Asynchronous Processing and GCS Persistence.
-"""
 
 import os
 import sys
@@ -10,7 +6,8 @@ import json
 import time
 import logging
 import subprocess
-import tempfile
+import requests
+import psycopg2
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from kafka_utils import create_consumer, create_producer, send_response
@@ -20,12 +17,31 @@ from scraper import scrape_and_collect
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+def get_metadata_attribute(attr_name):
+    url = f"http://metadata.google.internal/computeMetadata/v1/instance/attributes/{attr_name}"
+    headers = {"Metadata-Flavor": "Google"}
+    try:
+        response = requests.get(url, headers=headers, timeout=2)
+        if response.status_code == 200:
+            return response.text.strip()
+    except Exception as e:
+        print(f"Error fetching metadata {attr_name}: {e}")
+    return None
+
 # Environment Configuration
-GCS_BUCKET = os.environ.get("GCS_BUCKET", "")
+GCS_BUCKET = get_metadata_attribute("gcs-bucket")
 HADOOP_STREAMING_JAR = "/usr/lib/hadoop/hadoop-streaming.jar"
 MAPREDUCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mapreduce")
 STOPWORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stopwords.txt")
 INDEX_CACHE_PATH = "/tmp/inverted_index_cache.json"
+POSTGRES_IP = get_metadata_attribute("postgres-ip")
+
+DB_CONFIG = {
+    "host": POSTGRES_IP,
+    "database": "ieee_search",
+    "user": "admin",
+    "password": "supersecretpassword"
+}
 
 # Global State
 inverted_index = {}
@@ -60,6 +76,32 @@ def reload_from_gcs():
             logger.info("System state recovered from GCS.")
     except Exception:
         logger.info("No persistent index found. System starting with clean slate.")
+
+def persist_to_postgres(index_data):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        
+        insert_query = """
+        INSERT INTO inverted_index (term, doc_ids, count, updated_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (term) 
+        DO UPDATE SET 
+            doc_ids = EXCLUDED.doc_ids,
+            count = EXCLUDED.count,
+            updated_at = CURRENT_TIMESTAMP;
+        """
+        
+        for term, postings in index_data.items():
+            doc_ids_str = json.dumps(postings)
+            cur.execute(insert_query, (term, doc_ids_str, len(postings)))
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Successfully persisted {len(index_data)} terms to PostgreSQL at {POSTGRES_IP}.")
+    except Exception as e:
+        logger.error(f"PostgreSQL persistence error: {e}")
 
 # --- Hadoop Processing ---
 
@@ -116,10 +158,15 @@ def process_index_task(message, producer):
     
     try:
         # Step 1: Scrape
-        papers_data = scrape_and_collect(scholar_url)
+        local_json_path = f"/tmp/papers_{req_id}.json"
+        papers_data = scrape_and_collect(scholar_url, output_path=local_json_path)
+        if not papers_data:
+            logger.warning("No papers found. Aborting Hadoop job.")
+            send_response(producer, {"request_id": req_id, "status": "success", "data": {"num_terms": 0}})
+            return
         
         # Step 2: Prepare Input
-        input_file = "/tmp/papers_input.tsv"
+        input_file = f"/tmp/papers_{req_id}.tsv"
         with open(input_file, "w", encoding="utf-8") as f:
             for p in papers_data:
                 # Clean TSV breaks
@@ -128,6 +175,7 @@ def process_index_task(message, producer):
                 f.write(f"{p.get('ieee_id')}\t{title}\t{p.get('citations')}\t{abstract}\t{p.get('url')}\n")
         
         # Step 3: Run Hadoop
+        subprocess.run("hdfs dfs -mkdir -p /ieee-search/input", shell=True)
         subprocess.run(f"hdfs dfs -put -f {input_file} /ieee-search/input/papers.tsv", shell=True)
         run_hadoop_job(
             os.path.join(MAPREDUCE_DIR, "inverted_index_mapper.py"),
@@ -140,10 +188,39 @@ def process_index_task(message, producer):
         inverted_index = parse_inverted_index(res.stdout)
         persist_to_gcs()
         indexed = True
+        persist_to_postgres(inverted_index)
 
         send_response(producer, {"request_id": req_id, "status": "success", "data": {"num_terms": len(inverted_index)}})
     except Exception as e:
         logger.error(f"Async indexing failed: {e}")
+        send_response(producer, {"request_id": req_id, "status": "error", "error": str(e)})
+
+def process_topn_task(message, producer):
+    """Asynchronous handler for Top-N requests..."""
+    global inverted_index, indexed
+    req_id = message.get("request_id", "")
+    try:
+        if not indexed:
+            send_response(producer, {"request_id": req_id, "status": "error", "error": "System not indexed."})
+            return
+            
+        start_time = time.time()
+        
+        n = message.get("n", 10)
+        counts = {t: sum(p['frequency'] for p in ps) for t, ps in inverted_index.items()}
+        top = [{"term": k, "frequency": v} for k, v in Counter(counts).most_common(n)]
+        
+        exec_time = round((time.time() - start_time) * 1000, 2)
+        
+        send_response(producer, {
+            "request_id": req_id, 
+            "status": "success", 
+            "results": top,
+            "execution_time_ms": exec_time
+        })
+        logger.info(f"Top-{n} request {req_id} processed in {exec_time} ms.")
+    except Exception as e:
+        logger.error(f"Async TopN failed: {e}")
         send_response(producer, {"request_id": req_id, "status": "error", "error": str(e)})
 
 def main():
@@ -159,24 +236,21 @@ def main():
         req_id = req.get("request_id")
 
         if action == "index":
-            # Delegate heavy task to threadpool
             executor.submit(process_index_task, req, producer)
             
         elif action == "search":
-            # Search logic remains in-memory
             if not indexed:
                 send_response(producer, {"request_id": req_id, "status": "error", "error": "System not indexed."})
                 continue
+            start_time = time.time()
             term = req.get("term", "").lower().strip()
             results = inverted_index.get(term, [])
-            send_response(producer, {"request_id": req_id, "status": "success", "results": results})
+            exec_time = round((time.time() - start_time) * 1000, 2)
+            send_response(producer, {"request_id": req_id, "status": "success", "results": results, "execution_time_ms": exec_time})
 
         elif action == "topn":
-            # Optimized in-memory aggregation
-            n = req.get("n", 10)
-            counts = {t: sum(p['frequency'] for p in ps) for t, ps in inverted_index.items()}
-            top = [{"term": k, "frequency": v} for k, v in Counter(counts).most_common(n)]
-            send_response(producer, {"request_id": req_id, "status": "success", "results": top})
+            logger.info(f"Received Top-N request {req_id}, submitting to executor.")
+            executor.submit(process_topn_task, req, producer)
 
 if __name__ == "__main__":
     main()
