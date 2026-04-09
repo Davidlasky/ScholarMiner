@@ -1,3 +1,9 @@
 kafka-python-ng==2.2.2
+scrapling[fetchers]==0.4.2
 requests==2.31.0
 beautifulsoup4==4.12.2
+lxml>=6.0.2
+python-dotenv==1.0.1
+google-search-results
+psycopg2-binary
+redis

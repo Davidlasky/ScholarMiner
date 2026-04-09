@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from kafka_utils import create_consumer, create_producer, send_response
 from scraper import scrape_and_collect
+import redis
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -42,6 +43,14 @@ DB_CONFIG = {
     "user": "admin",
     "password": "supersecretpassword"
 }
+
+REDIS_IP = get_metadata_attribute("redis-ip")
+try:
+    redis_client = redis.Redis(host=REDIS_IP, port=6379, decode_responses=True)
+    redis_client.ping()
+except Exception as e:
+    logger.error(f"Redis connection failed: {e}")
+    redis_client = None
 
 # Global State
 inverted_index = {}
@@ -103,6 +112,20 @@ def persist_to_postgres(index_data):
     except Exception as e:
         logger.error(f"PostgreSQL persistence error: {e}")
 
+def persist_to_redis(index_data):
+    """Saves inverted index to Redis for blazing fast O(1) reads."""
+    if not redis_client: return
+    try:
+        pipe = redis_client.pipeline()
+        for term, postings in index_data.items():
+            pipe.set(f"search:{term}", json.dumps(postings))
+            total_freq = sum(p['frequency'] for p in postings)
+            pipe.zadd("term_freq", {term: total_freq})
+        pipe.execute()
+        logger.info(f"Successfully persisted {len(index_data)} terms to Redis.")
+    except Exception as e:
+        logger.error(f"Redis persistence error: {e}")
+
 # --- Hadoop Processing ---
 
 def run_hadoop_job(mapper, reducer, input_path, output_path):
@@ -136,15 +159,28 @@ def parse_inverted_index(output_text):
         word, postings_str = parts[0], parts[1]
         postings = []
         for p in postings_str.split("|"):
-            fields = p.split(":")
-            if len(fields) >= 5:
+            try:
+                remainder, freq_str = p.rsplit(":", 1)
+                
+                http_idx = remainder.rfind(":http")
+                if http_idx != -1:
+                    url = remainder[http_idx+1:]
+                    remainder = remainder[:http_idx]
+                else:
+                    remainder, url = remainder.rsplit(":", 1)
+                
+                remainder, citations_str = remainder.rsplit(":", 1)
+                doc_id, title = remainder.split(":", 1)
+
                 postings.append({
-                    "doc_id": fields[0], 
-                    "title": ":".join(fields[1:-3]), # Handles titles with colons
-                    "citations": fields[-3], 
-                    "url": fields[-2], 
-                    "frequency": int(fields[-1])
+                    "doc_id": doc_id,
+                    "doc_name": title,
+                    "citations": citations_str,
+                    "doc_url": url,
+                    "frequency": int(freq_str)
                 })
+            except Exception:
+                continue
         index[word] = postings
     return index
 
@@ -157,9 +193,13 @@ def process_index_task(message, producer):
     req_id = message.get("request_id", "")
     
     try:
+        if redis_client and redis_client.sismember("scraped_urls", scholar_url):
+            logger.info(f"URL {scholar_url} naturally cached in Redis! Bypassing scrape.")
+            send_response(producer, {"request_id": req_id, "status": "success", "data": {"num_terms": len(inverted_index), "cached": True}})
+            return
+
         # Step 1: Scrape
-        local_json_path = f"/tmp/papers_{req_id}.json"
-        papers_data = scrape_and_collect(scholar_url, output_path=local_json_path)
+        papers_data = scrape_and_collect(scholar_url)
         if not papers_data:
             logger.warning("No papers found. Aborting Hadoop job.")
             send_response(producer, {"request_id": req_id, "status": "success", "data": {"num_terms": 0}})
@@ -174,13 +214,13 @@ def process_index_task(message, producer):
                 abstract = p.get("abstract", "").replace("\t", " ").replace("\n", " ")
                 f.write(f"{p.get('ieee_id')}\t{title}\t{p.get('citations')}\t{abstract}\t{p.get('url')}\n")
         
-        # Step 3: Run Hadoop
+        # Step 3: Run Hadoop natively accumulating all TSVs
         subprocess.run("hdfs dfs -mkdir -p /ieee-search/input", shell=True)
-        subprocess.run(f"hdfs dfs -put -f {input_file} /ieee-search/input/papers.tsv", shell=True)
+        subprocess.run(f"hdfs dfs -put -f {input_file} /ieee-search/input/papers_{req_id}.tsv", shell=True)
         run_hadoop_job(
             os.path.join(MAPREDUCE_DIR, "inverted_index_mapper.py"),
             os.path.join(MAPREDUCE_DIR, "inverted_index_reducer.py"),
-            "/ieee-search/input/papers.tsv", "/ieee-search/output/inverted_index"
+            "/ieee-search/input/papers*.tsv", "/ieee-search/output/inverted_index"
         )
         
         # Step 4: Finalize Index
@@ -189,6 +229,10 @@ def process_index_task(message, producer):
         persist_to_gcs()
         indexed = True
         persist_to_postgres(inverted_index)
+        persist_to_redis(inverted_index)
+        
+        if redis_client:
+            redis_client.sadd("scraped_urls", scholar_url)
 
         send_response(producer, {"request_id": req_id, "status": "success", "data": {"num_terms": len(inverted_index)}})
     except Exception as e:
