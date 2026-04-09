@@ -14,3 +14,14 @@ variable "zone" {
   type        = string
   default     = "us-west1-a"
 }
+
+variable "serpapi_key" {
+  description = "SerpApi key for Google Scholar scraping"
+  type        = string
+}
+
+variable "frontend_image" {
+  description = "Frontend docker image to build and push"
+  type        = string
+  default     = "laskyj/ieee-flask-app:latest"
+}

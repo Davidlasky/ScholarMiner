@@ -137,6 +137,14 @@ services:
       - search_net
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+  redis:
+    image: redis:7-alpine
+    container_name: redis_db
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - search_net
   grafana:
     image: grafana/grafana
     restart: always
@@ -204,8 +212,14 @@ resource "google_compute_instance" "web_node" {
     docker run -d --name lightweight-app --restart always -p 5000:5000 \
       -e DB_URL="postgresql://admin:supersecretpassword@${google_compute_instance.backend_node.network_interface.0.network_ip}:5432/ieee_search" \
       -e KAFKA_BROKER="${google_compute_instance.kafka_vm.network_interface.0.network_ip}:9093" \
-      laskyj/ieee-flask-app:latest
+      -e REDIS_HOST="${google_compute_instance.backend_node.network_interface.0.network_ip}" \
+      -e REDIS_PORT="6379" \
+      ${var.frontend_image}
   EOT
+
+  depends_on = [
+    null_resource.frontend_image_build_push,
+  ]
 }
 
 # =====================================================================
@@ -242,7 +256,7 @@ resource "google_compute_firewall" "allow_backend_internal" {
   network = "default"
   allow {
     protocol = "tcp"
-    ports    = ["5432", "9090"]
+    ports    = ["5432", "9090", "6379"]
   }
   source_ranges = ["10.0.0.0/8"] # VPC Internal IP range only
   target_tags   = ["backend-secure"]
@@ -275,14 +289,96 @@ resource "google_storage_bucket" "data_bucket" {
 }
 
 resource "google_storage_bucket_object" "dataproc_init_script" {
-  name    = "scripts/pip_install.sh"
+  name    = "scripts/init_backend.sh"
   content = <<-EOF
     #!/bin/bash
+    set -euo pipefail
+
+    ROLE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/dataproc-role" -H "Metadata-Flavor: Google")
+    BUCKET=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket" -H "Metadata-Flavor: Google")
+    KAFKA_IP=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/kafka-broker" -H "Metadata-Flavor: Google")
+    REDIS_IP=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/redis-ip" -H "Metadata-Flavor: Google")
+    SERPAPI_KEY=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/serpapi-key" -H "Metadata-Flavor: Google")
+
+    # Install dependencies for Scrapling
     apt-get update
-    apt-get install -y python3-pip
-    pip3 install kafka-python-ng requests beautifulsoup4
+    apt-get install -y python3-pip wget libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 libasound2 libpangocairo-1.0-0 libxss1 libgtk-3-0
+
+    if [[ "$ROLE" == "Master" ]]; then
+      echo "Setting up backend on master node..."
+
+      mkdir -p /opt/backend/mapreduce
+
+      for attempt in {1..5}; do
+        if gsutil cp gs://$BUCKET/app/backend.py /opt/backend/ \
+          && gsutil cp gs://$BUCKET/app/scraper.py /opt/backend/ \
+          && gsutil cp gs://$BUCKET/app/kafka_utils.py /opt/backend/ \
+          && gsutil cp gs://$BUCKET/app/requirements.txt /opt/backend/ \
+          && gsutil cp gs://$BUCKET/app/stopwords.txt /opt/backend/ \
+          && gsutil cp gs://$BUCKET/mapreduce/*.py /opt/backend/mapreduce/; then
+          break
+        fi
+        echo "Backend artifacts not ready yet, retrying in 5 seconds..."
+        sleep 5
+      done
+
+      pip3 install -r /opt/backend/requirements.txt
+      playwright install chromium || true
+
+      HADOOP_STREAMING_JAR=$(find /usr/lib -name 'hadoop-streaming*.jar' 2>/dev/null | head -1)
+      if [[ -z "$HADOOP_STREAMING_JAR" ]]; then
+        HADOOP_STREAMING_JAR=/usr/lib/hadoop/hadoop-streaming.jar
+      fi
+
+      cat > /opt/backend/.env << ENV
+REDIS_IP=$REDIS_IP
+KAFKA_BROKER=$KAFKA_IP:9093
+GCS_BUCKET=$BUCKET
+HADOOP_STREAMING_JAR=$HADOOP_STREAMING_JAR
+SERPAPI_KEY=$SERPAPI_KEY
+ENV
+
+      set -a
+      source /opt/backend/.env
+      set +a
+
+      cd /opt/backend
+      nohup python3 backend.py >> /var/log/backend.log 2>&1 &
+      echo "Backend started."
+    fi
   EOF
   bucket  = google_storage_bucket.data_bucket.name
+}
+
+# Backend application files
+resource "google_storage_bucket_object" "backend_py" {
+  name   = "app/backend.py"
+  source = "${path.module}/../cluster-app/backend.py"
+  bucket = google_storage_bucket.data_bucket.name
+}
+
+resource "google_storage_bucket_object" "scraper_py" {
+  name   = "app/scraper.py"
+  source = "${path.module}/../cluster-app/scraper.py"
+  bucket = google_storage_bucket.data_bucket.name
+}
+
+resource "google_storage_bucket_object" "kafka_utils_py" {
+  name   = "app/kafka_utils.py"
+  source = "${path.module}/../cluster-app/kafka_utils.py"
+  bucket = google_storage_bucket.data_bucket.name
+}
+
+resource "google_storage_bucket_object" "requirements_txt" {
+  name   = "app/requirements.txt"
+  source = "${path.module}/../cluster-app/requirements.txt"
+  bucket = google_storage_bucket.data_bucket.name
+}
+
+resource "google_storage_bucket_object" "stopwords_app" {
+  name   = "app/stopwords.txt"
+  source = "${path.module}/../cluster-app/stopwords.txt"
+  bucket = google_storage_bucket.data_bucket.name
 }
 
 # Upload MapReduce scripts to GCS
@@ -489,6 +585,8 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
         "kafka-broker" = google_compute_instance.kafka_vm.network_interface[0].network_ip
         "gcs-bucket"   = google_storage_bucket.data_bucket.name
         "postgres-ip"  = google_compute_instance.backend_node.network_interface.0.network_ip
+        "redis-ip"     = google_compute_instance.backend_node.network_interface.0.network_ip
+        "serpapi-key"  = var.serpapi_key
       }
     }
   }
@@ -497,7 +595,24 @@ resource "google_dataproc_cluster" "hadoop_cluster" {
     google_project_service.dataproc,
     google_compute_instance.kafka_vm,
     google_storage_bucket_object.dataproc_init_script,
+    google_storage_bucket_object.backend_py,
+    google_storage_bucket_object.scraper_py,
+    google_storage_bucket_object.kafka_utils_py,
+    google_storage_bucket_object.requirements_txt,
+    google_storage_bucket_object.stopwords_app,
   ]
+}
+
+# Frontend Application Docker Build & Push
+resource "null_resource" "frontend_image_build_push" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    working_dir = "${path.module}/../lightweight-app"
+    command     = "docker buildx build --platform linux/amd64 -t ${var.frontend_image} --push ."
+  }
 }
 
 ###############################################################################
