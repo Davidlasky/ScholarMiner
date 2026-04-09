@@ -12,6 +12,7 @@ import logging
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+import redis
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "ieee-search-engine-secret-key")
@@ -21,6 +22,15 @@ KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
 KAFKA_REQUEST_TOPIC = os.environ.get("KAFKA_REQUEST_TOPIC", "search-requests")
 KAFKA_RESPONSE_TOPIC = os.environ.get("KAFKA_RESPONSE_TOPIC", "search-responses")
 KAFKA_TIMEOUT = int(os.environ.get("KAFKA_TIMEOUT", "300"))  # seconds
+
+# Redis Configuration
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+except Exception as e:
+    redis_client = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -155,7 +165,22 @@ def search_term():
             flash("Please enter a search term.", "error")
             return redirect(url_for("search_term"))
 
-        # Send search request to cluster via Kafka
+        # 1. Direct Query via Redis (O(1) Microsecond Cache Read)
+        if redis_client:
+            try:
+                cached_data = redis_client.get(f"search:{search_term_value}")
+                if cached_data:
+                    results = json.loads(cached_data)
+                    return render_template(
+                        "search_results.html",
+                        term=search_term_value,
+                        results=results,
+                        execution_time="< 1 (Redis Cache)",
+                    )
+            except Exception as e:
+                logger.error("Redis fetch failed: %s", str(e))
+
+        # 2. Command Fallback to Kafka
         message = {
             "action": "search",
             "term": search_term_value,
@@ -198,7 +223,22 @@ def top_n():
             flash("Please enter a positive number.", "error")
             return redirect(url_for("top_n"))
 
-        # Send Top-N request to cluster via Kafka
+        # 1. Direct leaderboard slice via Redis (O(1) Ordered Set operation)
+        if redis_client:
+            try:
+                cached_topn = redis_client.zrevrange("term_freq", 0, n - 1, withscores=True)
+                if cached_topn:
+                    results = [{"term": k, "frequency": int(v)} for k, v in cached_topn]
+                    return render_template(
+                        "topn_results.html",
+                        n=n,
+                        results=results,
+                        execution_time="< 1 (Redis Cache)",
+                    )
+            except Exception as e:
+                logger.error("Redis zrevrange failed: %s", str(e))
+
+        # 2. Command Fallback to Kafka
         message = {
             "action": "topn",
             "n": n,
