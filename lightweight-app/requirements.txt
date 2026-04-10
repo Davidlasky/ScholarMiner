@@ -1,4 +1,7 @@
 flask==3.0.0
-kafka-python-ng==2.2.2
 gunicorn==21.2.0
+google-cloud-pubsub
+google-cloud-secret-manager
+prometheus-client
+psycopg2-binary
 redis

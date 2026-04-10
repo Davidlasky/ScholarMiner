@@ -3,7 +3,10 @@
 {% block content %}
 <div class="main-content">
     <div class="success-message">
-        <p>Engine was Loaded &amp; Inverted indices were constructed successfully!</p>
+        <p>Indexing completed successfully.</p>
+        {% if task_result and task_result.num_terms is defined %}
+        <p>The current index contains {{ task_result.num_terms }} terms.</p>
+        {% endif %}
     </div>
 
     <h2>Please Select Action</h2>
