@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# Terraform local working files
+terraform/.terraform/
+terraform/.terraform.tfstate.lock.info
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform.tfstate
+
+# Local Terraform variable files
+terraform/terraform.tfvars
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform.tfvars
+
+.DS_Store
