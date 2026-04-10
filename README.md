@@ -1,108 +1,129 @@
-# Distributed Data Mining & Search Engine for IEEE Xplore
+# ScholarMiner
 
-A highly available, distributed search engine and data mining pipeline designed to process scholarly paper abstracts from Google Scholar and IEEE Xplore. The system leverages an event-driven microservices architecture on Google Cloud Platform (GCP), utilizing Apache Kafka for asynchronous message brokering, Hadoop MapReduce for distributed data processing, Redis for microsecond-latency caching, and Terraform for complete Infrastructure as Code (IaC) automation.
+ScholarMiner is a distributed search and indexing system for research papers. The application accepts a Google Scholar results URL, extracts matching IEEE papers and abstracts, builds an inverted index with Hadoop Streaming, and exposes search and Top-N term queries through a Flask web interface.
 
----
+The system pairs a lightweight user-facing application with an asynchronous processing pipeline so that interactive requests remain simple while indexing and scraping work can run independently.
 
-## Table of Contents
+## Core Capabilities
 
-- [Architectural Highlights & Engineering Decisions](#architectural-highlights--engineering-decisions)
-- [System Architecture](#system-architecture)
-- [Deployment Guide](#deployment-guide)
-- [Performance Benchmarking](#performance-benchmarking)
-- [Project Structure](#project-structure)
+- Accepts a Google Scholar results URL from the web application
+- Scrapes IEEE paper metadata and abstracts
+- Builds and refreshes an inverted index with Hadoop Streaming on Dataproc
+- Serves low-latency search and Top-N term queries through Redis
+- Persists indexed state to PostgreSQL and backs up cache state to Google Cloud Storage
+- Provisions cloud infrastructure with Terraform
 
----
+## Technology Stack
 
-## Architectural Highlights & Engineering Decisions
-
-This project was architected with a focus on fault tolerance, concurrency, and operational efficiency, solving multiple distributed systems challenges.
-
-### 1. CQRS Architecture with Redis Caching
-To achieve industrial-grade scalability, the system separates write and read concerns (Command Query Responsibility Segregation).
-- **Reads (Queries):** The lightweight Flask frontend (running on Gunicorn) directly queries a Redis instance for instantaneous (`< 1ms`) O(1) cache reads. 
-- **Writes (Commands):** Heavy scraping and MapReduce indexing tasks are dispatched asynchronously to the Hadoop cluster via Apache Kafka, preventing HTTP timeout bottlenecks.
-
-### 2. Accumulative Hadoop Indexing
-Unlike naive systems that overwrite data, this engine features an intelligent **Accumulative Inverted Index** mapped over HDFS. Every new URL scraped deposits a new TSV shard into the HDFS input directory. Subsequent Hadoop MapReduce jobs natively process the entire corpus, creating an ever-expanding global search tree that aggregates all knowledge discovered across distributed scraping sessions.
-
-### 3. Distributed URL Cache Registry
-To prevent redundant API consumption and compute waste, the Dataproc backend maintains a distributed URL lock in Redis (`scraped_urls`). Duplicate indexing requests instantly bypass the Scraping and MapReduce stages and return success, saving massive compute resources.
-
-### 4. Algorithmic Triage & In-Memory Optimization
-- **Heavy Lifting (MapReduce):** The O(N) construction of the inverted index across all papers is offloaded to distributed Dataproc worker nodes.
-- **Top-N Real-Time Slicing:** Instead of redundant Big Data processing for leaderboard queries, the Hadoop Reducer directly pushes term frequencies into a **Redis Sorted Set (`ZSET`)**. Complex Top-N slicing occurs in O(1) microsecond latency via `ZREVRANGE`.
-
-### 5. Seamless Infrastructure Automations
-The entire GCP compute layer and backend logic deployment are completely decoupled from manual interaction. 
-- Using **Terraform**, startup scripts and initialization hooks dynamically provision the infrastructure. 
-- The Dataproc Master node effortlessly constructs its Python environment, resolves metadata IP bindings, retrieves the latest `.py` artifacts from GCS buckets, and boots the async Kafka worker upon creation. No SSH required.
-- The Frontend Docker image is automatically built (`buildx`) and cleanly pushed to Docker Hub via Terraform `local-exec` provisioning.
-
----
+- Python
+- Flask
+- Apache Kafka
+- Hadoop Streaming / Dataproc
+- Redis
+- PostgreSQL
+- Terraform
+- Docker
+- Google Cloud Platform
 
 ## System Architecture
 
-```text
-[ Public Web ]                                         [ Secure Internal VPC ]
-                                                                
-+------------------+     +-------------------+       +---------------------------+
-|  User (Browser)  | <-> |   Web Node (VM)   | ----> |      Redis (Cache)        |
-+------------------+     | (Gunicorn Flask)  |       |  (Microsecond Queries)    |
-                         +-------------------+       +---------------------------+
-                               |                       ^           ^
-+------------------+       (Kafka Pub/Sub)             |           |
-|  Grafana UI      | <---------|-----------------------|-----------+
-|  (Port 3000)     |           v                       |
-+------------------+     +-------------------+         |
-                         |   Apache Kafka    |         |
-                         +-------------------+         |
-                               |    ^                  | (Persists Output)
-+------------------+           v    |                  |
-|  PostgreSQL DB   | <---+-------------------+         |
-+------------------+     |  Dataproc Master  | --------+
-                         |  (Async Worker)   |
-+------------------+     +-------------------+
-|   GCS Bucket     | <---|         |         |
-| (State Recovery) |     +---------v---------+
-+------------------+     | Dataproc Workers  |
-                         |     (HDFS)        |
-                         +-------------------+
+```mermaid
+flowchart LR
+    U[Browser] --> F[Flask Web App]
+
+    F -->|index/search/top-n requests| K[(Kafka)]
+    K --> B[Backend Worker]
+
+    subgraph DP[Dataproc Cluster]
+        B --> S[Scraper]
+        B --> H[Hadoop Streaming Jobs]
+        H --> X[(HDFS)]
+    end
+
+    B --> R[(Redis)]
+    B --> P[(PostgreSQL)]
+    B --> G[(Google Cloud Storage)]
+
+    F -->|cached reads| R
+    F -->|response correlation| K
 ```
 
----
+## Engineering Decisions and Design Patterns
 
-## Deployment Guide
+### Event-Driven Request Processing
 
-### Provision GCP Infrastructure
+The frontend does not execute long-running scraping or indexing work directly. Instead, it publishes requests to Kafka and waits for a correlated response using a generated `request_id`. This follows a producer-consumer model with a correlation ID pattern for request tracking. It decouples the web layer from the data-processing layer and keeps the UI responsive even when indexing work is expensive.
 
-1. Rename the credentials file and insert your API Key:
+### CQRS-Inspired Read/Write Separation
+
+The project uses a practical read/write split:
+
+- Write-heavy operations such as scraping, Hadoop indexing, and index refreshes run asynchronously in the backend worker
+- Read-heavy operations such as term lookup and Top-N queries are served directly from Redis whenever possible
+
+This keeps interactive queries fast while isolating the more expensive indexing workflow behind an asynchronous boundary.
+
+### Idempotent Indexing and Duplicate Work Avoidance
+
+To avoid repeating expensive scrape-and-index operations for the same source URL, the backend stores previously processed URLs in Redis. Repeated indexing requests can short-circuit early, which reduces unnecessary external API usage and redundant cluster work.
+
+### Polyglot Persistence by Access Pattern
+
+Different storage systems are used for different operational goals:
+
+- Redis handles latency-sensitive reads and ranked term queries
+- PostgreSQL stores structured index data durably
+- GCS is used as a recovery layer so the worker can restore previously computed state on startup
+
+This is a deliberate trade-off in favor of operational clarity rather than forcing every workload through a single datastore.
+
+### Batch Processing with a Thin Interactive Layer
+
+The heavy computation is pushed into Hadoop Streaming jobs rather than the web process. The Flask application remains a thin orchestration layer, while the backend handles distributed processing, persistence, and cache refreshes. This separation keeps the application easier to reason about and makes performance bottlenecks more explicit.
+
+## Request Flow
+
+1. A user submits a Google Scholar results URL in the Flask application.
+2. The app publishes an indexing request to Kafka.
+3. The backend worker scrapes paper data and writes TSV input into HDFS.
+4. Hadoop Streaming generates the inverted index.
+5. The backend persists the results to Redis and PostgreSQL, and writes a recovery copy to GCS.
+6. Search and Top-N requests are answered from Redis when available, with backend processing used as a fallback path.
+
+## Project Layout
+
+- `lightweight-app/`: Flask application, templates, and frontend container assets
+- `cluster-app/`: backend worker, scraper, Kafka utilities, and MapReduce scripts
+- `terraform/`: infrastructure definitions for GCP resources
+- `utils/`: helper scripts and benchmarking utilities
+- `DEPLOYMENT_GUIDE.md`: detailed deployment and operational notes
+
+## Running the Frontend Locally
+
+The primary workflow for this project is a GCP-backed deployment. For local frontend testing, the Flask app can still be built and run from `lightweight-app/`, but the full system expects Kafka, Redis, and the backend worker to be available in the deployed environment.
+
+If you want to run the frontend locally, configure the required environment variables in `lightweight-app/.env` so it can reach the deployed services.
+
+## Deploying to GCP
+
+1. Copy the Terraform variables file:
+
 ```bash
-cd ScholarMiner/terraform
+cd terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
-*(Open `terraform.tfvars` and paste your actual `serpapi_key`)*
 
-2. Initialize and deploy via Terraform:
+2. Fill in `project_id`, `region`, `zone`, and `serpapi_key`.
+
+3. Provision the infrastructure:
+
 ```bash
 terraform init
 terraform apply -auto-approve
 ```
 
-*That's it! Terraform completely automates the Hadoop data pipeline, Postgres DB, Redis deployment, Docker image pushes, and cluster setup. At the end of the deployment, Terraform will output the public URLs for the Search Engine and Grafana dashboard.*
-
----
-
-## Performance Benchmarking
-
-The Frontend runs using **Gunicorn parallel workers**, empowering the microservices to handle an enormous volume of traffic. Because Search and Top-N queries directly hit Redis bypassing the Hadoop clusters, the system effectively acts as a High Availability (HA) node capable of sustaining tens of thousands of concurrent reads.
-
-```bash
-python3 load_test.py
-```
-
----
+Terraform outputs the service URLs and internal infrastructure details used by the rest of the system. For the full deployment walkthrough, including backend worker setup and verification steps, see `DEPLOYMENT_GUIDE.md`.
 
 ## License
 
-This software is distributed under the GNU Affero General Public License Version 3 (AGPLv3). See `LICENSE` for further details.
+This project is licensed under the GNU Affero General Public License v3. See `LICENSE` for details.
