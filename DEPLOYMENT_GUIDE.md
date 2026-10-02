@@ -109,6 +109,40 @@ Use the following checks after provisioning:
 5. In the GCP Console, confirm the Dataproc cluster is healthy and the instances are running.
 6. Submit a sample Google Scholar URL through the web app, wait for the task status page to report completion, and verify that search results are returned.
 
+## Reproduce the Top-N benchmark
+
+Use a **disposable, empty deployment** for the deterministic synthetic corpus.
+The benchmark seed script refuses to replace a non-empty index. It does not
+scrape Google Scholar, so it measures indexed query paths rather than scraping
+quality or a production dataset. Keep the generated corpus hash and the JSON
+result together. The full procedure is:
+
+1. Generate a TSV corpus with `utils/generate_benchmark_corpus.py`, record its
+   SHA-256, and upload it to a unique `input/<run-id>/papers.tsv` GCS path.
+2. Submit `inverted_index_mapper.py` and `inverted_index_reducer.py` to the
+   deployment's Dataproc cluster with Hadoop Streaming. Use the JAR at
+   `file:///usr/lib/hadoop/hadoop-streaming.jar`; place output under
+   `output/inverted_index/<run-id>/` and check that `part-*` is non-empty.
+3. On one healthy worker VM, copy `cluster-app/scripts/seed_benchmark_index.py`
+   into the worker container and run it with
+   `SCHOLARMINER_ALLOW_BENCHMARK_SEED=1`, `--index-output-task-id <run-id>`,
+   `--source-url https://scholar.google.com/scholar?q=scholarminer-benchmark-<run-id>`,
+   `--session-task-id <new-uuid>`, and `--papers-indexed <count>`. It verifies
+   the Redis sorted set size and creates a completed task for the web session.
+4. Run `utils/benchmark_topn.py` against `search_engine_url` with `--seeded`,
+   `--completed-task-id <new-uuid>`, `--index-output-task-id <run-id>`, the
+   deployment project/region/cluster/bucket, corpus hash/count, sample counts,
+   and `--output <result.json>`. The script verifies that every web Top-N query
+   hits Redis and that its results match repeated Hadoop Top-N jobs on the same
+   inverted-index output. It reports application processing time separately
+   from full HTTP response time and Hadoop job wall-clock time.
+   To measure a second web access path without repeating Dataproc jobs, pass
+   `--baseline-runs 0 --baseline-reference <first-result.json>`; the script
+   checks corpus, index, and result identity and labels the reused baseline.
+5. Run `terraform destroy` and verify Cloud SQL, Memorystore, Dataproc, VMs,
+   and ScholarMiner Pub/Sub resources are gone. These can continue to incur
+   charges if only the compute instances are removed.
+
 ## Troubleshooting
 
 If deployment succeeds but indexing or queries fail:
