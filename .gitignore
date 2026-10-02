@@ -2,16 +2,21 @@ __pycache__/
 *.pyc
 
 # Terraform local working files
-terraform/.terraform/
-terraform/.terraform.tfstate.lock.info
-terraform/terraform.tfstate
-terraform/terraform.tfstate.*
-terraform.tfstate
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.*
+*.tfplan
 
 # Local Terraform variable files
-terraform/terraform.tfvars
-terraform/*.tfvars
-terraform/*.tfvars.json
-terraform.tfvars
+*.tfvars
+*.tfvars.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
 .DS_Store
