@@ -2,7 +2,7 @@ scrapling[fetchers]==0.4.2
 requests==2.33.0
 beautifulsoup4==4.12.2
 lxml>=6.0.2
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 google-search-results
 google-cloud-dataproc
 google-cloud-pubsub
