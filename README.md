@@ -1,332 +1,328 @@
-# Distributed Data Mining & Search Engine for IEEE Xplore
+# ScholarMiner
 
-This project implements a distributed data mining and search engine that processes scholarly paper abstracts from Google Scholar and IEEE Xplore. A lightweight web application handles user interaction, while a cloud-based Hadoop cluster performs all heavy computation. Apache Kafka serves as the communication bridge between the two components.
+ScholarMiner is a distributed search and indexing system for research papers. The application accepts a Google Scholar results URL, extracts matching IEEE papers and abstracts, builds an inverted index with Hadoop Streaming, and exposes search and Top-N term queries through a Flask web interface.
 
----
+The current deployment uses a single-region high-availability design: a load-balanced web tier submits asynchronous indexing tasks through Pub/Sub, a separate worker service drives scraping and Dataproc jobs, and managed stateful services handle the cache and durable persistence layers.
 
-## Table of Contents
+## Core Capabilities
 
-- [System Architecture](#system-architecture)
-- [How Data is Distributed Across Nodes](#how-data-is-distributed-across-nodes)
-- [Prerequisites](#prerequisites)
-- [Deployment Guide](#deployment-guide)
-  - [Step 1: Provision GCP Infrastructure with Terraform](#step-1-provision-gcp-infrastructure-with-terraform)
-  - [Step 2: Deploy the Backend to Dataproc](#step-2-deploy-the-backend-to-dataproc)
-  - [Step 3: Configure and Run the Lightweight Web App](#step-3-configure-and-run-the-lightweight-web-app)
-  - [Step 4: Using the Application](#step-4-using-the-application)
-  - [Step 5: Clean Up Resources](#step-5-clean-up-resources)
-- [Project Structure](#project-structure)
-- [Troubleshooting](#troubleshooting)
-- [Citations](#citations)
+- Accepts a Google Scholar results URL from the web application
+- Uses SerpAPI to discover IEEE papers from Google Scholar and Scrapling to retrieve abstracts, with Scholar snippets as a fallback
+- Builds and refreshes an inverted index with Hadoop Streaming on Dataproc
+- Serves low-latency search and Top-N term queries through Memorystore-backed Redis
+- Persists indexed state to Cloud SQL for PostgreSQL and backs up cache state to Google Cloud Storage
+- Tracks long-running indexing work through asynchronous task status records
+- Exposes Prometheus metrics for the web tier and worker tier, with Grafana auto-provisioned for dashboarding
+- Provisions cloud infrastructure with Terraform
 
----
+## Technology Stack
+
+- Python
+- Flask
+- Google Pub/Sub
+- SerpAPI / Scrapling
+- Hadoop Streaming / Dataproc
+- Memorystore for Redis
+- Cloud SQL for PostgreSQL
+- Secret Manager
+- Prometheus
+- Grafana
+- Terraform
+- Docker
+- Google Cloud Platform
 
 ## System Architecture
 
-The system is composed of two independently deployed components that communicate exclusively through Apache Kafka. The lightweight web app performs **no heavy computation** — all scraping, indexing, and search processing happens on the cloud cluster.
+```mermaid
+flowchart LR
+    U[Browser] --> LB[Global HTTP Load Balancer]
+    LB --> W[Flask Web Containers / Regional MIG]
 
+    W -->|submit indexing task| Q[(Pub/Sub)]
+    Q --> B[Worker Containers / Regional MIG]
+
+    subgraph DP[Dataproc Cluster]
+        H[Hadoop Streaming Jobs]
+    end
+
+    B -->|submit indexing job| H
+    B --> S[Scraper]
+    B --> R[(Memorystore Redis)]
+    B --> P[(Cloud SQL PostgreSQL)]
+    B --> G[(Google Cloud Storage)]
+    H -->|read input / write index shards| G
+    subgraph O[Observability VM]
+        M[Prometheus]
+        D[Grafana]
+    end
+    D -->|query metrics| M
+
+    W -->|task status + query fallback| P
+    W -->|cached reads| R
+    M -->|scrape web metrics| W
+    M -->|scrape worker metrics| B
+    M -->|scrape host metrics| N[Web and Worker Node Exporters]
 ```
-+------------------+        +---------------------+        +---------------------------+
-|  User (Browser)  | <----> | Lightweight Web App |        | Apache Kafka (GCP VM)     |
-+------------------+        | (Flask in Docker)   |        +---------------------------+
-                             |                     |          |                    ^
-                             | - Accepts Scholar   | -------> | Topic:             |
-                             |   URL from user     |          | search-requests    |
-                             | - Sends requests    |          |                    |
-                             |   to Kafka          |          | Topic:             |
-                             | - Displays results  | <------- | search-responses   |
-                             +---------------------+          |                    |
-                                                              v                    |
-                                                    +---------------------------+  |
-                                                    | Cluster Backend           |  |
-                                                    | (Python on Dataproc-m)    |  |
-                                                    |                           |  |
-                                                    | - Scrapes Scholar/IEEE    |  |
-                                                    | - Runs Hadoop M/R jobs    | -+
-                                                    | - Sends results to Kafka  |
-                                                    +---------------------------+
-                                                              |
-                                              +--------------+--------------+
-                                              |                             |
-                                    +------------------+        +------------------+
-                                    | Worker Node w-0  |        | Worker Node w-1  |
-                                    | (Hadoop Mapper/  |        | (Hadoop Mapper/  |
-                                    |  Reducer)        |        |  Reducer)        |
-                                    +------------------+        +------------------+
+
+The web and worker containers run in separate regional managed instance groups, with two instances each by default. Cloud SQL uses regional availability and Memorystore uses `STANDARD_HA`. Dataproc has three masters and two workers in the configured zone; the observability stack runs on one VM. Secret Manager supplies application credentials to the containers.
+
+## Engineering Decisions and Design Patterns
+
+### Event-Driven Task Submission
+
+The frontend does not execute long-running scraping or indexing work directly. Instead, it submits indexing tasks to Pub/Sub and tracks progress through task status rows in PostgreSQL. This follows a producer-consumer model while avoiding the fragility of synchronous request/reply messaging for long-running batch work.
+
+### CQRS-Inspired Read/Write Separation
+
+The project uses a practical read/write split:
+
+- Write-heavy operations such as scraping, Hadoop indexing, and index refreshes run asynchronously in the backend worker
+- Read-heavy operations such as term lookup and Top-N queries are served directly from Redis whenever possible
+
+This keeps interactive queries fast while isolating the more expensive indexing workflow behind an asynchronous boundary.
+
+### Idempotent Indexing and Duplicate Work Avoidance
+
+To avoid repeating expensive scrape-and-index operations for the same source URL, the worker stores previously processed source URLs in PostgreSQL and mirrors them into Redis when available. Repeated indexing requests can short-circuit early, which reduces unnecessary external API usage and redundant cluster work.
+
+A PostgreSQL advisory lock serializes index rebuilds across workers. Each successful rebuild replaces the shared index with the submitted source's snapshot; separate submissions do not accumulate into a combined corpus or create per-user indexes.
+
+### Polyglot Persistence by Access Pattern
+
+Different storage systems are used for different operational goals:
+
+- Redis handles latency-sensitive reads and ranked term queries
+- PostgreSQL stores structured index data durably, including task status and indexed source tracking
+- GCS is used as a recovery layer so the worker can restore previously computed state on startup
+
+This is a deliberate trade-off in favor of operational clarity rather than forcing every workload through a single datastore.
+
+### Batch Processing with a Thin Interactive Layer
+
+The heavy computation is pushed into Hadoop Streaming jobs rather than the web process. The Flask application remains a thin orchestration layer, while the backend handles distributed processing, persistence, and cache refreshes. This separation keeps the application easier to reason about and makes performance bottlenecks more explicit.
+
+## Request Flow
+
+1. A user submits a Google Scholar results URL in the Flask application.
+2. The app records a task row in PostgreSQL and publishes the indexing request to Pub/Sub.
+3. A worker service consumes the task, scrapes paper data, uploads input shards to GCS, and submits a Dataproc job.
+4. Hadoop Streaming generates the updated inverted index.
+5. The worker persists the latest snapshot to Redis and PostgreSQL, and writes a recovery copy to GCS.
+6. Search and Top-N requests are answered from Redis when available, with PostgreSQL used as the durable fallback path.
+
+## Project Layout
+
+```text
+ScholarMiner/
+├── lightweight-app/
+│   ├── app.py                       # Flask routes, task status, Redis/PostgreSQL reads
+│   ├── templates/                   # Indexing, task status, search, and Top-N pages
+│   ├── Dockerfile                   # Gunicorn web container
+│   └── requirements.txt
+├── cluster-app/
+│   ├── backend.py                   # Pub/Sub worker, Dataproc jobs, persistence, metrics
+│   ├── scraper.py                   # SerpAPI discovery and IEEE abstract retrieval
+│   ├── mapreduce/                   # Inverted-index and Top-N mapper/reducer scripts
+│   ├── scripts/seed_benchmark_index.py
+│   ├── stopwords.txt
+│   ├── Dockerfile                   # Standalone worker container
+│   └── requirements.txt
+├── terraform/
+│   ├── main.tf                     # GCP infrastructure and optional image builds
+│   ├── variables.tf
+│   ├── terraform.tfvars.example
+│   └── startup/                    # Web, worker, and observability VM startup templates
+├── utils/
+│   ├── benchmark_topn.py
+│   ├── generate_benchmark_corpus.py
+│   └── load_test.py
+├── benchmarks/                     # Dated Top-N results and methodology
+└── DEPLOYMENT_GUIDE.md              # Deployment, benchmark reproduction, and cleanup
 ```
 
----
+Terraform state, provider caches, local variable files, and `.env` files are excluded from Git. The Terraform provider lockfile remains versioned.
 
-## How Data is Distributed Across Nodes
+## Top-N Benchmark
 
-This section explains how the Hadoop cluster distributes data and what happens in the event of a node failure.
+On September 22, 2026, a deterministic 500-paper synthetic corpus produced 42 indexed terms. Redis Top-10 processing had a median of **0.88 ms** (p95 **1.05 ms**), while full HTTP responses through the public load balancer had a median of **104.106 ms** across 50 queries. The same index's Hadoop Top-N baseline had a median job time of **119.320 s** across three jobs, reused for the public run. These measurements cover pre-indexed queries; the application timer excludes HTML rendering and network latency. See [benchmark records and methodology](benchmarks/README.md) for raw results and validation limits.
 
-### Data Distribution
+## End-to-End Setup
 
-When the backend receives an indexing request, it writes all scraped paper abstracts into a single TSV file and uploads it to **HDFS (Hadoop Distributed File System)**. HDFS automatically splits this file into **128 MB blocks** and distributes those blocks across the two worker nodes (`ieee-search-cluster-w-0` and `ieee-search-cluster-w-1`).
+The steps below are enough for a new user to clone the repository, deploy the full system, use the web application, and access the observability stack.
 
-During the **Map phase**, each worker node processes only the blocks stored locally on its own disk. This is called **data locality** — moving computation to the data rather than the other way around. The mapper on each worker reads its local blocks, tokenizes the abstract text, removes stop words, and emits `(word, doc_id:title:citations:url:frequency)` key-value pairs.
+### Prerequisites
 
-During the **Reduce phase**, all intermediate pairs with the same key (i.e., the same word) are shuffled to the same reducer. The reducer aggregates all postings for each word and writes the final inverted index entry. The output is stored back in HDFS and read by the master node to serve search queries.
+- A GCP project with billing enabled
+- Google Cloud SDK
+- Terraform
+- Docker with `buildx` and a container registry you can push to when `build_images = true` (the default)
+- A SerpAPI key for Google Scholar scraping
 
-### Fault Tolerance
-
-HDFS stores **3 replicas** of every data block by default (configurable via `dfs.replication`). If one worker node fails during a MapReduce job, the YARN ResourceManager detects the failure and automatically reschedules the failed map or reduce tasks on the remaining healthy nodes. The data blocks that were on the failed node are re-replicated from the surviving copies to restore the replication factor. This means the system can tolerate the failure of any single worker node without data loss or job failure.
-
----
-
-## Prerequisites
-
-Before deploying, ensure the following are available:
-
-- A **Google Cloud Platform account** with billing enabled.
-- **Docker and Docker Compose** installed on your local machine ([Installation Guide](https://docs.docker.com/get-docker/)).
-- Access to **Google Cloud Shell** (no local Terraform installation required — Terraform is pre-installed in Cloud Shell).
-
-> **Only one manual configuration step is required**: After Terraform finishes, you must update the `KAFKA_BROKER` IP address in `lightweight-app/.env` with the external IP printed in the Terraform output. This is unavoidable because the IP is only known after the VM is created.
-
----
-
-## Deployment Guide
-
-### Step 1: Provision GCP Infrastructure with Terraform
-
-All infrastructure is provisioned automatically using Terraform. No manual GCP Console configuration is needed.
-
-**1.1 Open Google Cloud Shell**
-
-Go to [https://console.cloud.google.com/](https://console.cloud.google.com/) and click the **Activate Cloud Shell** button (`>_`) in the top-right corner.
-
-**1.2 Upload and Extract the Project**
-
-In the Cloud Shell terminal, click the three-dot menu (`⋮`) and select **Upload**. Upload the `ieee-search-engine.zip` file, then run:
+### 1. Clone the Repository
 
 ```bash
-unzip ieee-search-engine.zip
-cd ieee-search-engine/terraform
+git clone https://github.com/Davidlasky/ScholarMiner.git
+cd ScholarMiner
 ```
 
-**1.3 Initialize and Apply Terraform**
+### 2. Authenticate GCP and Docker
+
+```bash
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud auth application-default login
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+docker login
+```
+
+`terraform apply` uses Application Default Credentials for GCP API calls. With `build_images = true`, it also uses `docker buildx --push` for the web and worker images, so container registry auth must be valid. With `build_images = false`, it deploys existing image tags and skips local Docker builds and pushes.
+
+### 3. Configure Terraform Variables
+
+Copy the example file:
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Update `terraform.tfvars` with values you control:
+
+- `project_id`
+- `region`
+- `zone`
+- `serpapi_key`
+- `frontend_image`
+- `worker_image`
+- `data_bucket_force_destroy`
+- `build_images` (default `true`; set `false` to use existing image tags)
+- `observability_allowed_cidrs` (default `[]`; permits no public Grafana or Prometheus access)
+
+If you change `region`, keep `zone` and `ha_zones` in that region. The regional web and worker instance counts default to two each.
+
+With local image builds enabled, `frontend_image` and `worker_image` must point to image tags that your registry account can push to. With builds disabled, both tags must already exist and include the current application changes. For Docker Hub, a typical example is:
+
+```tfvars
+frontend_image = "yourdockerhubusername/scholarminer-web:latest"
+worker_image   = "yourdockerhubusername/scholarminer-worker:latest"
+data_bucket_force_destroy = true
+```
+
+Set `data_bucket_force_destroy = true` for the default demo workflow where you want `terraform destroy` to remove the versioned data bucket automatically. Set it to `false` if you want Terraform to refuse bucket deletion while indexed data or prior object versions still exist.
+
+### 4. Deploy the Full System
 
 ```bash
 terraform init
 terraform apply -auto-approve
 ```
 
-This step takes approximately 10–15 minutes. It creates:
-- A **Dataproc cluster** (`ieee-search-cluster`) with 1 master node and 2 worker nodes.
-- A **Kafka broker VM** (`kafka-broker`) running Apache Kafka with dual listeners.
-- A **GCS bucket** for storing MapReduce scripts and data.
-- **Firewall rules** for Kafka (ports 9092, 9093) and SSH (IAP range).
+This step does all of the following:
 
-**1.4 Record the Outputs**
+- Builds and pushes the frontend and worker images when `build_images = true`
+- Provisions the regional web tier, worker tier, Dataproc cluster, Cloud SQL, Memorystore, Pub/Sub, GCS, and observability node
+- Auto-provisions Grafana datasources and a starter dashboard
 
-When complete, Terraform prints output values. Write down the `kafka_external_ip`:
+Deployment can take several minutes, and the provisioned resources will incur cloud charges until you destroy them.
 
-```
-Outputs:
-kafka_external_ip = "34.XX.XX.XX"
-kafka_internal_ip = "10.142.0.X"
-gcs_bucket        = "aerial-citron-428307-c5-ieee-search-data"
-```
+### 5. Retrieve the URLs and Login Credentials
 
----
-
-### Step 2: Deploy the Backend to Dataproc
-
-**2.1 Open SSH to the Master Node**
-
-In the GCP Console, go to **Compute Engine → VM Instances** and click the **SSH** button next to `ieee-search-cluster-m`.
-
-**2.2 Install Dependencies and Start the Backend**
-
-In the SSH window, run the following block:
+List all outputs:
 
 ```bash
-# Install Python dependencies into the Conda environment
-/opt/conda/default/bin/pip install kafka-python-ng requests beautifulsoup4
-
-# Verify installation
-python3 -c "import kafka; print('Kafka library ready')"
-
-# Kill any old processes
-pkill -f backend.py || true
-
-# Start the backend
-cd /tmp/cluster-app
-export KAFKA_BROKER='10.142.0.X:9093'        # Replace with your kafka_internal_ip
-export KAFKA_REQUEST_TOPIC='search-requests'
-export KAFKA_RESPONSE_TOPIC='search-responses'
-export GCS_BUCKET='aerial-citron-428307-c5-ieee-search-data'
-
-nohup python3 backend.py > /tmp/backend.log 2>&1 &
-
-# Watch the log for success
-tail -f /tmp/backend.log
+terraform output
 ```
 
-Wait until you see:
-```
-INFO - Connected to Kafka successfully
-INFO - Backend is ready and listening for requests...
-```
+The most important outputs are:
 
-> **Note**: The deployment script (`cluster-app/scripts/deploy_to_cluster.sh`) automates this process if `gcloud compute ssh` is working in your environment. If you encounter SSH errors (return code 255), use the browser-based SSH button as described above.
+- `search_engine_url`
+- `grafana_dashboard_url`
+- `prometheus_url`
+- `grafana_admin_password`
 
----
-
-### Step 3: Configure and Run the Lightweight Web App
-
-Switch to your **local machine**.
-
-**3.1 Set the Kafka Broker IP (The Only Manual Step)**
-
-Open `lightweight-app/.env` and update the `KAFKA_BROKER` line with the `kafka_external_ip` from the Terraform output:
-
-```env
-KAFKA_BROKER=34.XX.XX.XX:9092
-KAFKA_REQUEST_TOPIC=search-requests
-KAFKA_RESPONSE_TOPIC=search-responses
-KAFKA_TIMEOUT=300
-```
-
-**3.2 Build and Run with Docker**
-
-From the project root directory:
+You can fetch individual values directly:
 
 ```bash
-docker-compose up --build
+terraform output -raw search_engine_url
+terraform output -raw grafana_dashboard_url
+terraform output -raw prometheus_url
+terraform output -raw grafana_admin_password
 ```
 
-The app will be available at **http://localhost:5001**.
+Grafana login:
 
----
+- Username: `admin`
+- Password: the value from `terraform output -raw grafana_admin_password`
 
-### Step 4: Using the Application
+### 6. Run the Application End to End
 
-The application follows a linear workflow:
+1. Open `search_engine_url` in your browser.
+2. Paste a Google Scholar results URL into the indexing form.
+3. Wait for the task status page to move from `PENDING` or `RUNNING` to `COMPLETE`.
+4. Use `Search for Term` to query the inverted index.
+5. Use `Most Frequent Terms` to view the Top-N term leaderboard.
 
-| Step | Action | What Happens |
-|---|---|---|
-| 1 | Enter a Google Scholar URL and click **"Index Papers"** | The web app sends the URL to the cluster via Kafka. The cluster scrapes up to 15 pages, fetches IEEE Xplore abstracts, and runs the Inverted Index MapReduce job. |
-| 2 | Click **"Search for Term"** | Enter a word. The cluster looks it up in the inverted index and returns matching papers with their citation counts and term frequencies. |
-| 3 | Click **"Most Frequent Terms"** | Enter a number N. The cluster runs the Top-N MapReduce job and returns the N most frequent non-stop-word terms across all indexed abstracts. |
+The intended input is a Google Scholar results page URL, not an IEEE Xplore paper URL directly.
 
-> **Tip**: Indexing takes 3–6 minutes because it involves scraping 15 pages, fetching abstracts, and running a Hadoop job. Search and Top-N queries are much faster once the index is built.
+### 7. Use the Observability Stack
 
----
+After the deployment is up:
 
-### Step 5: Clean Up Resources
+Grafana and Prometheus are not publicly accessible by default. To use their output URLs from your browser, set `observability_allowed_cidrs` to your client IP's CIDR (for example, `["YOUR_PUBLIC_IP/32"]`) and apply the configuration, or establish an SSH tunnel to the observability VM.
 
-**Always destroy resources when you are done to avoid ongoing charges (~$1.50–2.00/hour).**
+1. Open `prometheus_url`.
+2. Open `Status -> Targets` and confirm Prometheus is scraping:
+   - the web service
+   - the worker service
+   - the node exporters
+3. Open `grafana_dashboard_url`.
+4. Log in with `admin` and the generated password.
+5. Open the auto-provisioned `ScholarMiner Overview` dashboard.
 
-In Cloud Shell:
+### 8. Redeploy After Code Changes
+
+For Terraform configuration changes, rerun from the repository root:
 
 ```bash
-cd ~/ieee-search-engine/terraform
+cd terraform
+terraform apply -auto-approve
+```
+
+For application changes, use a new image tag and update the corresponding Terraform variable. Building and pushing an existing tag alone does not refresh containers on running VMs; an existing deployment also needs a managed instance group rollout or instance recreation. When using prebuilt images, ensure the worker includes the Hadoop Streaming JAR-path fix before running fresh indexing.
+
+The current workflow is intentionally ephemeral: apply to stand up the full system, test the changes, then destroy the stack when you are done.
+
+### 9. Destroy the Stack
+
+When you are finished testing:
+
+```bash
+cd terraform
 terraform destroy -auto-approve
 ```
 
-On your local machine:
+If you keep `data_bucket_force_destroy = true`, Terraform will remove the indexed data bucket and its object versions during teardown. If you set it to `false`, empty the bucket manually before destroying the stack.
+
+`google_service_networking_connection.private_service_connection` uses `deletion_policy = "ABANDON"` to avoid a known GCP destroy race where Private Services Access producer subnets can outlive Cloud SQL or Memorystore deletion. This means `terraform destroy` can intentionally leave the PSA connection and allocated range behind if Google has not fully released them yet.
+
+If you are updating an existing deployment that predates this workaround, run the following once before destroying so Terraform records the policy in state without recreating the full stack:
 
 ```bash
-docker-compose down
+cd terraform
+terraform apply -target=google_service_networking_connection.private_service_connection -auto-approve
 ```
 
----
+### Local Frontend Only
 
-## Project Structure
+Create your own untracked `lightweight-app/.env` for local frontend configuration and pass it with Docker's `--env-file`, or export the variables before starting Python/Gunicorn. The application reads process environment variables. It requires reachable PostgreSQL, Pub/Sub, and the worker service for the indexing workflow; Redis supplies cached reads. A full Terraform deployment injects its configuration through VM startup templates.
 
-```
-ieee-search-engine/
-├── lightweight-app/              # Thin client web application (runs locally in Docker)
-│   ├── app.py                    # Flask application — handles UI and Kafka messaging only
-│   ├── templates/                # 7 HTML templates matching the project mockup
-│   │   ├── base.html
-│   │   ├── index.html            # Home page: URL input
-│   │   ├── select_action.html    # Action selection after indexing
-│   │   ├── search_term.html      # Search term input
-│   │   ├── search_results.html   # Search results table (Doc ID, Citations, Name, Frequency)
-│   │   ├── topn.html             # Top-N input
-│   │   └── topn_results.html     # Top-N results table (Term, Total Frequency, Execution Time)
-│   ├── Dockerfile                # Docker container definition (Gunicorn, 600s timeout)
-│   ├── requirements.txt
-│   └── .env                      # Kafka broker IP (update after Terraform apply)
-│
-├── cluster-app/                  # Heavy-processing backend (runs on Dataproc master node)
-│   ├── backend.py                # Main orchestrator: consumes Kafka, runs jobs, sends results
-│   ├── scraper.py                # Google Scholar (15 pages) + IEEE Xplore abstract parser
-│   │                             # Includes randomized delays and mock-data fallback for 429/403
-│   ├── kafka_utils.py            # Kafka producer/consumer helper functions
-│   ├── stopwords.txt             # Stop word list for MapReduce filtering
-│   ├── mapreduce/
-│   │   ├── inverted_index_mapper.py    # Hadoop Streaming mapper: tokenize + emit word-doc pairs
-│   │   ├── inverted_index_reducer.py   # Hadoop Streaming reducer: aggregate postings per word
-│   │   ├── topn_mapper.py              # Hadoop Streaming mapper: emit term frequencies
-│   │   └── topn_reducer.py             # Hadoop Streaming reducer: sort and select top N
-│   └── scripts/
-│       ├── setup_backend.sh      # Installs deps via Conda pip, sets up working directory
-│       └── deploy_to_cluster.sh  # Copies files to cluster and starts backend
-│
-├── terraform/                    # Infrastructure as Code (provisions all GCP resources)
-│   ├── main.tf                   # Dataproc cluster, Kafka VM, GCS bucket, firewall rules
-│   ├── variables.tf              # Variable declarations
-│   └── terraform.tfvars          # Variable values (project ID, region, zone)
-│
-├── docker-compose.yml            # Runs the lightweight app locally
-├── .gitignore
-├── README.md                     # This file
-└── DEPLOYMENT_GUIDE.md           # Detailed troubleshooting guide
-```
+### Troubleshooting
 
----
+- If `terraform apply` fails on `google_service_networking_connection.private_service_connection` with an authentication error, rerun the `gcloud auth login` and `gcloud auth application-default login` commands above, then run `terraform apply` again.
+- If Grafana is up but you cannot log in, fetch the password again with `terraform output -raw grafana_admin_password`.
+- If the task status page stays in `RUNNING` for too long, check the worker instances and Dataproc cluster in GCP.
+- If Prometheus is up but targets are missing, verify that the web and worker managed instance groups are healthy and that the instances are running.
 
-## Troubleshooting
+## License
 
-**`ModuleNotFoundError: No module named 'kafka'` on Dataproc**
-
-Dataproc uses a Conda-managed Python at `/opt/conda/default/bin/python3`. Always install packages with:
-```bash
-/opt/conda/default/bin/pip install kafka-python-ng
-```
-
-**`gcloud compute ssh` fails with return code 255**
-
-Use the browser-based SSH button in the GCP Console (Compute Engine → VM Instances) instead. Add the IAP firewall rule if needed:
-```bash
-gcloud compute firewall-rules create allow-ssh-ingress-from-iap \
-    --direction=INGRESS --action=allow --rules=tcp:22 \
-    --source-ranges=35.235.240.0/20
-```
-
-**Scraper returns 429 or 403 (Google blocking)**
-
-The scraper automatically falls back to sample IEEE paper data when blocked. Wait 15–30 minutes for the block to expire before retrying with a real URL.
-
-**Web app shows `ERR_EMPTY_RESPONSE`**
-
-The Gunicorn timeout was too short. The `Dockerfile` is already configured with `--timeout 600`. Rebuild the Docker image with `docker-compose up --build`.
-
-**Web app shows `Timeout waiting for response from cluster`**
-
-Each request uses a unique Kafka consumer group ID (with timestamp) to avoid missing responses. If this persists, check the backend log (`tail -f /tmp/backend.log`) to confirm the cluster received the request.
-
----
-
-## Citations
-
-[1] Apache Software Foundation. *Apache Hadoop*. https://hadoop.apache.org/
-
-[2] Apache Software Foundation. *Apache Kafka: A Distributed Streaming Platform*. https://kafka.apache.org/
-
-[3] HashiCorp. *Terraform: Infrastructure as Code*. https://www.terraform.io/
-
-[4] Google Cloud. *Cloud Dataproc Documentation*. https://cloud.google.com/dataproc/docs
-
-[5] Google LLC. *Google Scholar*. https://scholar.google.com/
-
-[6] IEEE. *IEEE Xplore Digital Library*. https://ieeexplore.ieee.org/
-
-[7] Dean, J., & Ghemawat, S. (2008). *MapReduce: Simplified Data Processing on Large Clusters*. Communications of the ACM, 51(1), 107–113. https://dl.acm.org/doi/10.1145/1327452.1327492
-
-[8] Shvachko, K., Kuang, H., Radia, S., & Chansler, R. (2010). *The Hadoop Distributed File System*. 2010 IEEE 26th Symposium on Mass Storage Systems and Technologies (MSST). https://ieeexplore.ieee.org/document/5496972
+This project is licensed under the GNU Affero General Public License v3. See `LICENSE` for details.

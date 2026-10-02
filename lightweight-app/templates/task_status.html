@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-content" data-task-id="{{ task.task_id }}"
+    data-task-api-url="{{ url_for('task_status_api', task_id=task.task_id) }}"
+    data-poll-interval-ms="{{ poll_interval * 1000 }}" data-select-url="{{ url_for('select_action') }}"
+    data-reset-url="{{ url_for('reset') }}" data-status="{{ task.status }}">
+    <div class="results-container">
+        <h2 style="text-align: left;">Indexing Task Status</h2>
+
+        <div class="results-info">
+            <p><strong>Task ID:</strong> <span id="task-id">{{ task.task_id }}</span></p>
+            <p><strong>Scholar URL:</strong> <span id="task-url">{{ task.scholar_url }}</span></p>
+            <p><strong>Status:</strong> <span id="task-status">{{ task.status }}</span></p>
+            <p id="task-message-row" {% if not task.message %}style="display: none;" {% endif %}>
+                <strong>Message:</strong> <span id="task-message">{{ task.message }}</span>
+            </p>
+        </div>
+
+        <div id="task-success" class="success-message" {% if task.status !="COMPLETE" %}style="display: none;" {% endif
+            %}>
+            <p id="task-success-text">Indexing completed successfully.</p>
+            <p id="task-result-summary" {% if not task.result or task.result.num_terms is not defined
+                %}style="display: none;" {% endif %}>
+                {% if task.result and task.result.num_terms is defined %}
+                The current index contains {{ task.result.num_terms }} terms.
+                {% endif %}
+            </p>
+        </div>
+
+        <div id="task-error" class="flash-error" {% if task.status !="FAILED" %}style="display: none;" {% endif %}>
+            <span id="task-error-text">The indexing task failed. Please review the message above and try again.</span>
+        </div>
+
+        <div id="task-running" class="results-info" {% if task.status not in ["PENDING", "RUNNING" ]
+            %}style="display: none;" {% endif %}>
+            <p id="task-running-text">The task is still running. This page will update automatically.</p>
+        </div>
+
+        <div id="task-actions" class="btn-group">
+            {% if task.status == "COMPLETE" %}
+            <a id="task-primary-action" href="{{ url_for('select_action') }}" class="btn btn-large">Continue</a>
+            <a id="task-secondary-action" href="{{ url_for('reset') }}" class="btn">Start Over</a>
+            {% elif task.status == "FAILED" %}
+            <a id="task-primary-action" href="{{ url_for('reset') }}" class="btn">Submit Another URL</a>
+            {% else %}
+            <a id="task-primary-action" href="{{ url_for('task_status', task_id=task.task_id) }}" class="btn">Refresh
+                Status</a>
+            <a id="task-secondary-action" href="{{ url_for('reset') }}" class="btn">Cancel and Start Over</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const taskContainer = document.querySelector('[data-task-id]');
+
+    if (taskContainer) {
+        const taskApiUrl = taskContainer.dataset.taskApiUrl;
+        const pollIntervalMs = Number(taskContainer.dataset.pollIntervalMs || 5000);
+        const selectUrl = taskContainer.dataset.selectUrl;
+        const resetUrl = taskContainer.dataset.resetUrl;
+
+        const taskStatusEl = document.getElementById('task-status');
+        const taskMessageEl = document.getElementById('task-message');
+        const taskMessageRowEl = document.getElementById('task-message-row');
+        const taskRunningEl = document.getElementById('task-running');
+        const taskRunningTextEl = document.getElementById('task-running-text');
+        const taskSuccessEl = document.getElementById('task-success');
+        const taskSuccessTextEl = document.getElementById('task-success-text');
+        const taskResultSummaryEl = document.getElementById('task-result-summary');
+        const taskErrorEl = document.getElementById('task-error');
+        const taskErrorTextEl = document.getElementById('task-error-text');
+        const taskActionsEl = document.getElementById('task-actions');
+
+        let pollingTimer = null;
+
+        function stopPolling() {
+            if (pollingTimer) {
+                clearTimeout(pollingTimer);
+                pollingTimer = null;
+            }
+        }
+
+        function setActionButtons(status) {
+            if (status === 'COMPLETE') {
+                taskActionsEl.innerHTML = `
+                    <a id="task-primary-action" href="${selectUrl}" class="btn btn-large">Continue</a>
+                    <a id="task-secondary-action" href="${resetUrl}" class="btn">Start Over</a>
+                `;
+                return;
+            }
+
+            if (status === 'FAILED') {
+                taskActionsEl.innerHTML = `
+                    <a id="task-primary-action" href="${resetUrl}" class="btn">Submit Another URL</a>
+                `;
+                return;
+            }
+
+            taskActionsEl.innerHTML = `
+                <button id="task-primary-action" type="button" class="btn">Check Again</button>
+                <a id="task-secondary-action" href="${resetUrl}" class="btn">Cancel and Start Over</a>
+            `;
+            document.getElementById('task-primary-action').addEventListener('click', function () {
+                fetchAndRenderTask();
+            });
+        }
+
+        function renderTask(task) {
+            const status = task.status || 'UNKNOWN';
+            const message = task.message || '';
+            const result = task.result || {};
+
+            taskStatusEl.textContent = status;
+            taskMessageEl.textContent = message;
+            taskMessageRowEl.style.display = message ? '' : 'none';
+
+            const isRunning = status === 'PENDING' || status === 'RUNNING';
+            taskRunningEl.style.display = isRunning ? '' : 'none';
+            taskSuccessEl.style.display = status === 'COMPLETE' ? '' : 'none';
+            taskErrorEl.style.display = status === 'FAILED' ? '' : 'none';
+
+            if (isRunning) {
+                taskRunningTextEl.textContent = 'The task is still running. This page will update automatically.';
+            }
+
+            if (status === 'COMPLETE') {
+                taskSuccessTextEl.textContent = 'Indexing completed successfully.';
+                if (typeof result.num_terms === 'number') {
+                    taskResultSummaryEl.style.display = '';
+                    taskResultSummaryEl.textContent = `The current index contains ${result.num_terms} terms.`;
+                } else {
+                    taskResultSummaryEl.style.display = 'none';
+                    taskResultSummaryEl.textContent = '';
+                }
+                stopPolling();
+            } else if (status === 'FAILED') {
+                taskErrorTextEl.textContent = message || 'The indexing task failed. Please review the message above and try again.';
+                stopPolling();
+            }
+
+            setActionButtons(status);
+
+            if (isRunning) {
+                stopPolling();
+                pollingTimer = setTimeout(fetchAndRenderTask, pollIntervalMs);
+            }
+        }
+
+        async function fetchAndRenderTask() {
+            try {
+                const response = await fetch(taskApiUrl, {
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Task polling failed with status ${response.status}`);
+                }
+
+                const task = await response.json();
+                renderTask(task);
+            } catch (error) {
+                taskRunningEl.style.display = '';
+                taskRunningTextEl.textContent = 'Unable to refresh the task status automatically. Please try again.';
+                stopPolling();
+            }
+        }
+
+        setActionButtons(taskContainer.dataset.status);
+
+        if (taskContainer.dataset.status === 'PENDING' || taskContainer.dataset.status === 'RUNNING') {
+            pollingTimer = setTimeout(fetchAndRenderTask, pollIntervalMs);
+        }
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,7 @@
+project_id  = "your-gcp-project-id"
+region      = "us-west1"
+zone        = "us-west1-a"
+serpapi_key = "your-serpapi-key-here"
+frontend_image = "yourdockerhubusername/scholarminer-web:latest"
+worker_image   = "yourdockerhubusername/scholarminer-worker:latest"
+data_bucket_force_destroy = true

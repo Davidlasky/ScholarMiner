@@ -1,0 +1,417 @@
+#!/bin/bash
+set -euo pipefail
+
+apt-get update
+apt-get install -y docker.io
+systemctl enable docker
+systemctl start docker
+
+mkdir -p /opt/observability
+mkdir -p /opt/observability/provisioning/datasources
+mkdir -p /opt/observability/provisioning/dashboards
+mkdir -p /opt/observability/dashboards
+
+cat > /opt/observability/prometheus.yml <<'PROMETHEUS'
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: 'scholarminer_node_exporter'
+    gce_sd_configs:
+%{ for zone in ha_zones ~}
+      - project: '${project_id}'
+        zone: '${zone}'
+        port: 9100
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__meta_gce_label_scholarminer_monitoring]
+        regex: 'true'
+        action: keep
+      - source_labels: [__meta_gce_private_ip]
+        regex: '(.+)'
+        target_label: __address__
+        replacement: '$1:9100'
+
+  - job_name: 'scholarminer_web'
+    metrics_path: /metrics
+    gce_sd_configs:
+%{ for zone in ha_zones ~}
+      - project: '${project_id}'
+        zone: '${zone}'
+        port: 5000
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__meta_gce_label_scholarminer_role]
+        regex: 'web'
+        action: keep
+      - source_labels: [__meta_gce_private_ip]
+        regex: '(.+)'
+        target_label: __address__
+        replacement: '$1:5000'
+
+  - job_name: 'scholarminer_worker'
+    metrics_path: /metrics
+    gce_sd_configs:
+%{ for zone in ha_zones ~}
+      - project: '${project_id}'
+        zone: '${zone}'
+        port: 8080
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__meta_gce_label_scholarminer_role]
+        regex: 'worker'
+        action: keep
+      - source_labels: [__meta_gce_private_ip]
+        regex: '(.+)'
+        target_label: __address__
+        replacement: '$1:8080'
+PROMETHEUS
+
+cat > /opt/observability/provisioning/datasources/datasources.yml <<'DATASOURCES'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: scholarminer-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: Google Cloud Monitoring
+    uid: scholarminer-stackdriver
+    type: stackdriver
+    access: proxy
+    editable: false
+    jsonData:
+      authenticationType: gce
+      defaultProject: ${project_id}
+DATASOURCES
+
+cat > /opt/observability/provisioning/dashboards/dashboards.yml <<'DASHBOARDS'
+apiVersion: 1
+providers:
+  - name: ScholarMiner
+    orgId: 1
+    folder: ScholarMiner
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+DASHBOARDS
+
+cat > /opt/observability/dashboards/scholarminer-overview.json <<'DASHBOARD'
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(scholarminer_web_http_requests_total{endpoint!=\"metrics\"}[5m])) by (status_code)",
+          "legendFormat": "{{status_code}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Web Requests / sec",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(scholarminer_web_http_request_latency_seconds_bucket{endpoint!=\"metrics\"}[5m])) by (le, endpoint))",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Web Request P95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(scholarminer_web_index_submissions_total[5m])) by (result)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Index Task Submissions / sec",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(scholarminer_worker_tasks_total[5m])) by (status)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Worker Task Outcomes / sec",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(scholarminer_worker_task_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "title": "Worker Task P95 Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Node CPU Busy %",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Node Memory Usage %",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "scholarminer-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 8,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "scholarminer_worker_last_index_term_count",
+          "refId": "A"
+        }
+      ],
+      "title": "Last Indexed Term Count",
+      "type": "stat"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "scholarminer"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "",
+  "title": "ScholarMiner Overview",
+  "uid": "scholarminer-overview",
+  "version": 1
+}
+DASHBOARD
+
+docker network create observability || true
+docker rm -f prometheus grafana node-exporter || true
+
+docker run -d --name node-exporter --restart unless-stopped --network observability prom/node-exporter:latest
+docker run -d --name prometheus --restart unless-stopped --network observability -p 9090:9090 \
+  -v /opt/observability/prometheus.yml:/etc/prometheus/prometheus.yml \
+  prom/prometheus
+docker run -d --name grafana --restart unless-stopped --network observability -p 3000:3000 \
+  -e GF_SECURITY_ADMIN_USER=admin \
+  -e GF_SECURITY_ADMIN_PASSWORD='${grafana_admin_password}' \
+  -e GF_USERS_ALLOW_SIGN_UP=false \
+  -v /opt/observability/provisioning/datasources:/etc/grafana/provisioning/datasources \
+  -v /opt/observability/provisioning/dashboards:/etc/grafana/provisioning/dashboards \
+  -v /opt/observability/dashboards:/var/lib/grafana/dashboards \
+  grafana/grafana
