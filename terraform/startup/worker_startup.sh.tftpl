@@ -1,0 +1,31 @@
+#!/bin/bash
+set -euo pipefail
+
+apt-get update
+apt-get install -y docker.io
+systemctl enable docker
+systemctl start docker
+
+docker rm -f scholarminer-worker scholarminer-worker-node-exporter || true
+docker pull ${worker_image}
+
+docker run -d --name scholarminer-worker-node-exporter --restart unless-stopped -p 9100:9100 \
+  prom/node-exporter:latest
+
+docker run -d --name scholarminer-worker --restart unless-stopped -p 8080:8080 \
+  -e GCP_PROJECT="${project_id}" \
+  -e PUBSUB_SUBSCRIPTION="${pubsub_subscription}" \
+  -e DB_HOST="${db_host}" \
+  -e DB_PORT="5432" \
+  -e DB_NAME="${db_name}" \
+  -e DB_USER="${db_user}" \
+  -e DB_PASSWORD_SECRET="${db_password_secret}" \
+  -e REDIS_HOST="${redis_host}" \
+  -e REDIS_PORT="${redis_port}" \
+  -e GCS_BUCKET="${gcs_bucket}" \
+  -e DATAPROC_CLUSTER="${dataproc_cluster}" \
+  -e DATAPROC_REGION="${dataproc_region}" \
+  -e SERPAPI_SECRET="${serpapi_secret}" \
+  -e WORKER_HEALTH_PORT="8080" \
+  -e MAX_PARALLEL_TASKS="1" \
+  "${worker_image}"

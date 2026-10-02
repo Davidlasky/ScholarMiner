@@ -17,6 +17,7 @@ EXPOSE 5000
 ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
 
-# Run with gunicorn for production
-# Increased timeout to 600s (10 mins) to allow for long-running Hadoop jobs
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "600", "app:app"]
+# Run with gunicorn for production.
+# HA is provided by the regional MIG, so a single worker per instance keeps
+# Prometheus metrics consistent without requiring multiprocess aggregation.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "120", "app:app"]
