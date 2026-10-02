@@ -21,6 +21,7 @@ from flask import (
     flash,
     g,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -640,7 +641,7 @@ def top_n():
             flash("Please enter a positive number.", "error")
             return redirect(url_for("top_n"))
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         client = get_redis_client()
         if client:
             try:
@@ -651,13 +652,17 @@ def top_n():
                         for term, score in cached_topn
                     ]
                     TOPN_QUERIES_TOTAL.labels("redis").inc()
-                    execution_time = round((time.time() - start_time) * 1000, 2)
-                    return render_template(
-                        "topn_results.html",
-                        n=n,
-                        results=results,
-                        execution_time=execution_time,
+                    execution_time = round((time.perf_counter() - start_time) * 1000, 2)
+                    response = make_response(
+                        render_template(
+                            "topn_results.html",
+                            n=n,
+                            results=results,
+                            execution_time=execution_time,
+                        )
                     )
+                    response.headers["X-ScholarMiner-Query-Source"] = "redis"
+                    return response
             except Exception as exc:
                 logger.warning("Redis top-N lookup failed: %s", exc)
 
@@ -670,13 +675,17 @@ def top_n():
             flash(f"Top-N query failed: {exc}", "error")
             return redirect(url_for("top_n"))
 
-        execution_time = round((time.time() - start_time) * 1000, 2)
-        return render_template(
-            "topn_results.html",
-            n=n,
-            results=results,
-            execution_time=execution_time,
+        execution_time = round((time.perf_counter() - start_time) * 1000, 2)
+        response = make_response(
+            render_template(
+                "topn_results.html",
+                n=n,
+                results=results,
+                execution_time=execution_time,
+            )
         )
+        response.headers["X-ScholarMiner-Query-Source"] = "postgres"
+        return response
 
     return render_template("topn.html")
 
