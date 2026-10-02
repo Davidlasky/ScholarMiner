@@ -1,0 +1,189 @@
+{
+  "timestamp_utc": "2026-09-22T20:18:08.191155+00:00",
+  "project": "aerial-citron-428307-c5",
+  "region": "us-west1",
+  "cluster": "scholarminer-dataproc",
+  "bucket": "aerial-citron-428307-c5-scholarminer-data",
+  "task_id": "0bf05bd9-32f7-4741-ab68-bf311503d80d",
+  "index_output_task_id": "benchseed-20260922-v2",
+  "scholar_url": "https://scholar.google.com/scholar?q=scholarminer-benchmark-20260922-v2",
+  "dataset_label": "synthetic-seed-20260922",
+  "corpus_sha256": "4b2b3d1352b0a9a927ebfc716075a56a9f40361b344c8715bc901f31c651df0e",
+  "papers_indexed": 500,
+  "indexed_terms": 42,
+  "top_n": 10,
+  "warmups": 5,
+  "redis_processing": {
+    "count": 50,
+    "min_ms": 0.68,
+    "median_ms": 0.91,
+    "p95_ms": 1.05,
+    "max_ms": 1.14,
+    "samples_ms": [
+      0.94,
+      0.94,
+      0.9,
+      0.86,
+      0.88,
+      1.02,
+      0.92,
+      0.88,
+      0.83,
+      0.82,
+      1.05,
+      0.94,
+      0.99,
+      1.0,
+      0.91,
+      0.91,
+      0.8,
+      1.07,
+      0.88,
+      0.88,
+      0.93,
+      0.8,
+      0.96,
+      0.94,
+      0.89,
+      0.85,
+      0.8,
+      0.91,
+      0.86,
+      0.85,
+      0.91,
+      1.03,
+      0.97,
+      0.81,
+      0.74,
+      0.99,
+      0.98,
+      1.14,
+      0.83,
+      0.81,
+      0.75,
+      1.0,
+      0.95,
+      1.0,
+      0.94,
+      1.04,
+      0.88,
+      0.87,
+      0.68,
+      0.71
+    ]
+  },
+  "redis_http": {
+    "count": 50,
+    "min_ms": 77.161,
+    "median_ms": 106.115,
+    "p95_ms": 113.765,
+    "max_ms": 138.896,
+    "samples_ms": [
+      79.703,
+      80.646,
+      107.888,
+      79.577,
+      109.532,
+      113.765,
+      104.399,
+      106.824,
+      106.543,
+      104.348,
+      104.548,
+      106.232,
+      107.468,
+      107.097,
+      105.998,
+      82.131,
+      80.7,
+      78.305,
+      107.901,
+      119.502,
+      78.762,
+      107.649,
+      110.192,
+      103.034,
+      106.948,
+      79.479,
+      138.896,
+      82.491,
+      84.46,
+      104.485,
+      78.958,
+      107.869,
+      79.889,
+      80.077,
+      107.762,
+      108.94,
+      110.005,
+      81.539,
+      77.161,
+      106.78,
+      108.762,
+      79.829,
+      107.992,
+      110.242,
+      106.593,
+      106.627,
+      80.867,
+      109.733,
+      102.875,
+      81.151
+    ]
+  },
+  "hadoop_job_wall_clock": {
+    "count": 3,
+    "min_ms": 114532.941,
+    "median_ms": 119320.396,
+    "p95_ms": 123273.398,
+    "max_ms": 123273.398,
+    "samples_ms": [
+      119320.396,
+      114532.941,
+      123273.398
+    ]
+  },
+  "top_n_results": [
+    [
+      "algorithm",
+      1916
+    ],
+    [
+      "backend",
+      1779
+    ],
+    [
+      "architecture",
+      1752
+    ],
+    [
+      "cache",
+      1690
+    ],
+    [
+      "cloud",
+      1653
+    ],
+    [
+      "data",
+      1606
+    ],
+    [
+      "container",
+      1560
+    ],
+    [
+      "deployment",
+      1556
+    ],
+    [
+      "concurrency",
+      1548
+    ],
+    [
+      "database",
+      1485
+    ]
+  ],
+  "methodology": "Redis processing time is the web application's displayed pre-render Top-N timer; HTTP time is client-observed full response time; Hadoop time includes gcloud job submission and completion but excludes result download. All paths use the same index output. Seeded mode uses a deterministic pre-indexed corpus and does not test web task submission or scraping."
+}
