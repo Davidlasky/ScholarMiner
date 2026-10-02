@@ -476,7 +476,7 @@ def submit_hadoop_job(task_id):
     job = {
         "placement": {"cluster_name": DATAPROC_CLUSTER},
         "hadoop_job": {
-            "main_jar_file_uri": "file:///usr/lib/hadoop-mapreduce/hadoop-streaming.jar",
+            "main_jar_file_uri": "file:///usr/lib/hadoop/hadoop-streaming.jar",
             "args": [
                 "-files",
                 f"{mapper_uri},{reducer_uri},{stopwords_uri}",
