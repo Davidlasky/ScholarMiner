@@ -36,6 +36,8 @@ cp terraform.tfvars.example terraform.tfvars
 - `frontend_image`
 - `worker_image`
 - `data_bucket_force_destroy`
+- `build_images` (default `true`; set `false` to deploy existing image tags when local Docker is unavailable)
+- `observability_allowed_cidrs` (default `[]`, which keeps Grafana and Prometheus private)
 
 For the usual demo workflow, set `data_bucket_force_destroy = true` so `terraform destroy` also removes the versioned data bucket contents. Set it to `false` if you want to protect indexed data from accidental deletion.
 
@@ -50,6 +52,14 @@ terraform init
 ```bash
 terraform apply -auto-approve
 ```
+
+For a disposable debugging deployment, you may pass
+`-var='observability_allowed_cidrs=["0.0.0.0/0"]'` to expose Grafana (3000) and
+Prometheus (9090) publicly. Do not leave that deployment running afterward.
+When `build_images = false`, verify both specified tags exist in the image
+registry before applying; Terraform will not rebuild them. Do not use an older
+worker tag for fresh indexing if it predates the Hadoop Streaming JAR-path fix
+in `cluster-app/backend.py`.
 
 Provisioning can take several minutes. During this process, Terraform:
 

@@ -384,6 +384,7 @@ resource "google_storage_bucket_iam_member" "worker_bucket_admin" {
 }
 
 resource "null_resource" "frontend_image_build_push" {
+  count = var.build_images ? 1 : 0
   triggers = {
     always_run = timestamp()
   }
@@ -395,6 +396,7 @@ resource "null_resource" "frontend_image_build_push" {
 }
 
 resource "null_resource" "worker_image_build_push" {
+  count = var.build_images ? 1 : 0
   triggers = {
     always_run = timestamp()
   }
@@ -669,6 +671,7 @@ resource "google_compute_firewall" "allow_internal" {
 }
 
 resource "google_compute_firewall" "allow_grafana_public" {
+  count   = length(var.observability_allowed_cidrs) > 0 ? 1 : 0
   name    = "scholarminer-allow-grafana"
   network = data.google_compute_network.default.name
 
@@ -677,11 +680,12 @@ resource "google_compute_firewall" "allow_grafana_public" {
     ports    = ["3000"]
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  source_ranges = var.observability_allowed_cidrs
   target_tags   = ["observability-public"]
 }
 
 resource "google_compute_firewall" "allow_prometheus_public" {
+  count   = length(var.observability_allowed_cidrs) > 0 ? 1 : 0
   name    = "scholarminer-allow-prometheus"
   network = data.google_compute_network.default.name
 
@@ -690,7 +694,7 @@ resource "google_compute_firewall" "allow_prometheus_public" {
     ports    = ["9090"]
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  source_ranges = var.observability_allowed_cidrs
   target_tags   = ["observability-public"]
 }
 

@@ -39,6 +39,12 @@ variable "worker_image" {
   default     = "laskyj/scholarminer-worker:latest"
 }
 
+variable "build_images" {
+  description = "Build and push images locally during apply; disable when using prebuilt image tags"
+  type        = bool
+  default     = true
+}
+
 variable "web_instance_count" {
   description = "Number of web instances in the regional managed instance group"
   type        = number
@@ -55,4 +61,10 @@ variable "data_bucket_force_destroy" {
   description = "Whether Terraform should delete the versioned data bucket and all objects during destroy"
   type        = bool
   default     = false
+}
+
+variable "observability_allowed_cidrs" {
+  description = "Optional CIDR ranges allowed to access Grafana and Prometheus; empty keeps both private"
+  type        = list(string)
+  default     = []
 }
