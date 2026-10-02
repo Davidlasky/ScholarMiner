@@ -7,7 +7,7 @@ The current deployment uses a single-region high-availability design: a load-bal
 ## Core Capabilities
 
 - Accepts a Google Scholar results URL from the web application
-- Scrapes IEEE paper metadata and abstracts
+- Uses SerpAPI to discover IEEE papers from Google Scholar and Scrapling to retrieve abstracts, with Scholar snippets as a fallback
 - Builds and refreshes an inverted index with Hadoop Streaming on Dataproc
 - Serves low-latency search and Top-N term queries through Memorystore-backed Redis
 - Persists indexed state to Cloud SQL for PostgreSQL and backs up cache state to Google Cloud Storage
@@ -20,9 +20,11 @@ The current deployment uses a single-region high-availability design: a load-bal
 - Python
 - Flask
 - Google Pub/Sub
+- SerpAPI / Scrapling
 - Hadoop Streaming / Dataproc
 - Memorystore for Redis
 - Cloud SQL for PostgreSQL
+- Secret Manager
 - Prometheus
 - Grafana
 - Terraform
@@ -33,28 +35,36 @@ The current deployment uses a single-region high-availability design: a load-bal
 
 ```mermaid
 flowchart LR
-    U[Browser] --> LB[Regional Load Balancer]
-    LB --> W[Flask Web Service]
+    U[Browser] --> LB[Global HTTP Load Balancer]
+    LB --> W[Flask Web Containers / Regional MIG]
 
     W -->|submit indexing task| Q[(Pub/Sub)]
-    Q --> B[Worker Service]
+    Q --> B[Worker Containers / Regional MIG]
 
     subgraph DP[Dataproc Cluster]
-        B --> H[Hadoop Streaming Jobs]
+        H[Hadoop Streaming Jobs]
     end
 
+    B -->|submit indexing job| H
     B --> S[Scraper]
     B --> R[(Memorystore Redis)]
     B --> P[(Cloud SQL PostgreSQL)]
     B --> G[(Google Cloud Storage)]
-    O[Observability Node] --> M[(Prometheus)]
-    O --> D[Grafana]
+    H -->|read input / write index shards| G
+    subgraph O[Observability VM]
+        M[Prometheus]
+        D[Grafana]
+    end
+    D -->|query metrics| M
 
     W -->|task status + query fallback| P
     W -->|cached reads| R
-    M -->|scrape web and worker metrics| W
-    M -->|scrape node metrics| B
+    M -->|scrape web metrics| W
+    M -->|scrape worker metrics| B
+    M -->|scrape host metrics| N[Web and Worker Node Exporters]
 ```
+
+The web and worker containers run in separate regional managed instance groups, with two instances each by default. Cloud SQL uses regional availability and Memorystore uses `STANDARD_HA`. Dataproc has three masters and two workers in the configured zone; the observability stack runs on one VM. Secret Manager supplies application credentials to the containers.
 
 ## Engineering Decisions and Design Patterns
 
@@ -74,6 +84,8 @@ This keeps interactive queries fast while isolating the more expensive indexing 
 ### Idempotent Indexing and Duplicate Work Avoidance
 
 To avoid repeating expensive scrape-and-index operations for the same source URL, the worker stores previously processed source URLs in PostgreSQL and mirrors them into Redis when available. Repeated indexing requests can short-circuit early, which reduces unnecessary external API usage and redundant cluster work.
+
+A PostgreSQL advisory lock serializes index rebuilds across workers. Each successful rebuild replaces the shared index with the submitted source's snapshot; separate submissions do not accumulate into a combined corpus or create per-user indexes.
 
 ### Polyglot Persistence by Access Pattern
 
@@ -100,11 +112,39 @@ The heavy computation is pushed into Hadoop Streaming jobs rather than the web p
 
 ## Project Layout
 
-- `lightweight-app/`: Flask application, templates, and frontend container assets
-- `cluster-app/`: backend worker, scraper, worker container assets, and MapReduce scripts
-- `terraform/`: infrastructure definitions for GCP resources
-- `utils/`: helper scripts and benchmarking utilities
-- `DEPLOYMENT_GUIDE.md`: detailed deployment and operational notes
+```text
+ScholarMiner/
+├── lightweight-app/
+│   ├── app.py                       # Flask routes, task status, Redis/PostgreSQL reads
+│   ├── templates/                   # Indexing, task status, search, and Top-N pages
+│   ├── Dockerfile                   # Gunicorn web container
+│   └── requirements.txt
+├── cluster-app/
+│   ├── backend.py                   # Pub/Sub worker, Dataproc jobs, persistence, metrics
+│   ├── scraper.py                   # SerpAPI discovery and IEEE abstract retrieval
+│   ├── mapreduce/                   # Inverted-index and Top-N mapper/reducer scripts
+│   ├── scripts/seed_benchmark_index.py
+│   ├── stopwords.txt
+│   ├── Dockerfile                   # Standalone worker container
+│   └── requirements.txt
+├── terraform/
+│   ├── main.tf                     # GCP infrastructure and optional image builds
+│   ├── variables.tf
+│   ├── terraform.tfvars.example
+│   └── startup/                    # Web, worker, and observability VM startup templates
+├── utils/
+│   ├── benchmark_topn.py
+│   ├── generate_benchmark_corpus.py
+│   └── load_test.py
+├── benchmarks/                     # Dated Top-N results and methodology
+└── DEPLOYMENT_GUIDE.md              # Deployment, benchmark reproduction, and cleanup
+```
+
+Terraform state, provider caches, local variable files, and `.env` files are excluded from Git. The Terraform provider lockfile remains versioned.
+
+## Top-N Benchmark
+
+On September 22, 2026, a deterministic 500-paper synthetic corpus produced 42 indexed terms. Redis Top-10 processing had a median of **0.88 ms** (p95 **1.05 ms**), while full HTTP responses through the public load balancer had a median of **104.106 ms** across 50 queries. The same index's Hadoop Top-N baseline had a median job time of **119.320 s** across three jobs, reused for the public run. These measurements cover pre-indexed queries; the application timer excludes HTML rendering and network latency. See [benchmark records and methodology](benchmarks/README.md) for raw results and validation limits.
 
 ## End-to-End Setup
 
@@ -115,14 +155,13 @@ The steps below are enough for a new user to clone the repository, deploy the fu
 - A GCP project with billing enabled
 - Google Cloud SDK
 - Terraform
-- Docker with `buildx`
-- A container registry you can push to
+- Docker with `buildx` and a container registry you can push to when `build_images = true` (the default)
 - A SerpAPI key for Google Scholar scraping
 
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-fork-or-repo-url>
+git clone https://github.com/Davidlasky/ScholarMiner.git
 cd ScholarMiner
 ```
 
@@ -136,7 +175,7 @@ gcloud auth application-default set-quota-project YOUR_PROJECT_ID
 docker login
 ```
 
-`terraform apply` uses Application Default Credentials for GCP API calls and `docker buildx --push` for the web and worker images, so both GCP auth and container registry auth need to be valid before deploying.
+`terraform apply` uses Application Default Credentials for GCP API calls. With `build_images = true`, it also uses `docker buildx --push` for the web and worker images, so container registry auth must be valid. With `build_images = false`, it deploys existing image tags and skips local Docker builds and pushes.
 
 ### 3. Configure Terraform Variables
 
@@ -156,8 +195,12 @@ Update `terraform.tfvars` with values you control:
 - `frontend_image`
 - `worker_image`
 - `data_bucket_force_destroy`
+- `build_images` (default `true`; set `false` to use existing image tags)
+- `observability_allowed_cidrs` (default `[]`; permits no public Grafana or Prometheus access)
 
-`frontend_image` and `worker_image` must point to image tags that your registry account can push to. For Docker Hub, a typical example is:
+If you change `region`, keep `zone` and `ha_zones` in that region. The regional web and worker instance counts default to two each.
+
+With local image builds enabled, `frontend_image` and `worker_image` must point to image tags that your registry account can push to. With builds disabled, both tags must already exist and include the current application changes. For Docker Hub, a typical example is:
 
 ```tfvars
 frontend_image = "yourdockerhubusername/scholarminer-web:latest"
@@ -176,8 +219,7 @@ terraform apply -auto-approve
 
 This step does all of the following:
 
-- Builds and pushes the frontend image
-- Builds and pushes the worker image
+- Builds and pushes the frontend and worker images when `build_images = true`
 - Provisions the regional web tier, worker tier, Dataproc cluster, Cloud SQL, Memorystore, Pub/Sub, GCS, and observability node
 - Auto-provisions Grafana datasources and a starter dashboard
 
@@ -226,6 +268,8 @@ The intended input is a Google Scholar results page URL, not an IEEE Xplore pape
 
 After the deployment is up:
 
+Grafana and Prometheus are not publicly accessible by default. To use their output URLs from your browser, set `observability_allowed_cidrs` to your client IP's CIDR (for example, `["YOUR_PUBLIC_IP/32"]`) and apply the configuration, or establish an SSH tunnel to the observability VM.
+
 1. Open `prometheus_url`.
 2. Open `Status -> Targets` and confirm Prometheus is scraping:
    - the web service
@@ -237,12 +281,14 @@ After the deployment is up:
 
 ### 8. Redeploy After Code Changes
 
-If you edit application or Terraform code, rerun:
+For Terraform configuration changes, rerun from the repository root:
 
 ```bash
 cd terraform
 terraform apply -auto-approve
 ```
+
+For application changes, use a new image tag and update the corresponding Terraform variable. Building and pushing an existing tag alone does not refresh containers on running VMs; an existing deployment also needs a managed instance group rollout or instance recreation. When using prebuilt images, ensure the worker includes the Hadoop Streaming JAR-path fix before running fresh indexing.
 
 The current workflow is intentionally ephemeral: apply to stand up the full system, test the changes, then destroy the stack when you are done.
 
@@ -268,7 +314,7 @@ terraform apply -target=google_service_networking_connection.private_service_con
 
 ### Local Frontend Only
 
-`lightweight-app/.env` is only for running the Flask frontend outside the Terraform-managed deployment. A full cloud deployment does not depend on that file.
+Create your own untracked `lightweight-app/.env` for local frontend configuration and pass it with Docker's `--env-file`, or export the variables before starting Python/Gunicorn. The application reads process environment variables. It requires reachable PostgreSQL, Pub/Sub, and the worker service for the indexing workflow; Redis supplies cached reads. A full Terraform deployment injects its configuration through VM startup templates.
 
 ### Troubleshooting
 
